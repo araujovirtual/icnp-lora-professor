@@ -1,82 +1,13 @@
 #include <Arduino.h>
-#include <SPI.h>
-#include <LoRa.h>
 
-#define FREQUENCIA_LORA 915E6
-
-#define LORA_SCK 5
-#define LORA_MISO 19
-#define LORA_MOSI 27
-#define LORA_SS 18
-#define LORA_RST 14
-#define LORA_DIO0 26
+#include "radio_lora.h"
+#include "protocolo_icnp.h"
 
 const unsigned long intervaloBeaconMs = 3000;
 const unsigned long tempoEsperaDataMs = 1200;
 
 unsigned long ultimoBeacon = 0;
 unsigned long cicloAtual = 0;
-
-void iniciarLoRa() {
-  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
-  LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
-
-  if (!LoRa.begin(FREQUENCIA_LORA)) {
-    Serial.println("ERRO: Falha ao iniciar LoRa.");
-    while (true) {
-      delay(1000);
-    }
-  }
-
-  LoRa.setSpreadingFactor(7);
-  LoRa.setSignalBandwidth(125E3);
-  LoRa.setCodingRate4(5);
-}
-
-void enviarMensagem(const String &mensagem) {
-  LoRa.beginPacket();
-  LoRa.print(mensagem);
-  LoRa.endPacket();
-}
-
-String receberMensagem(unsigned long tempoLimiteMs, int &rssi, float &snr) {
-  unsigned long inicio = millis();
-
-  while (millis() - inicio < tempoLimiteMs) {
-    int tamanhoPacote = LoRa.parsePacket();
-
-    if (tamanhoPacote > 0) {
-      String mensagem = "";
-
-      while (LoRa.available()) {
-        mensagem += (char)LoRa.read();
-      }
-
-      rssi = LoRa.packetRssi();
-      snr = LoRa.packetSnr();
-      return mensagem;
-    }
-  }
-
-  return "";
-}
-
-String extrairCampo(const String &mensagem, const String &campo) {
-  int inicio = mensagem.indexOf(campo + "=");
-
-  if (inicio < 0) {
-    return "";
-  }
-
-  inicio += campo.length() + 1;
-  int fim = mensagem.indexOf(";", inicio);
-
-  if (fim < 0) {
-    fim = mensagem.length();
-  }
-
-  return mensagem.substring(inicio, fim);
-}
 
 void registrarCsvSucesso(
   unsigned long ciclo,
@@ -137,7 +68,7 @@ void setup() {
   Serial.println("Frequencia: 915 MHz");
   Serial.println("================================");
 
-  iniciarLoRa();
+  iniciarRadioLoRa();
 
   Serial.println("LoRa iniciado com sucesso.");
   Serial.println("Iniciando ciclos ICNP...");
@@ -156,21 +87,18 @@ void loop() {
   ultimoBeacon = agora;
   cicloAtual++;
 
-  String beacon = "ICNP;TIPO=BEACON;PROFESSOR=1;CICLO=" + String(cicloAtual);
+  String beacon = montarBeaconIcnp(cicloAtual);
 
   Serial.println();
   Serial.println("===== CICLO ICNP =====");
   Serial.print("Enviando: ");
   Serial.println(beacon);
 
-  enviarMensagem(beacon);
+  enviarMensagemLoRa(beacon);
 
-  int rssi = 0;
-  float snr = 0.0;
+  PacoteRecebido pacote = receberMensagemLoRa(tempoEsperaDataMs);
 
-  String data = receberMensagem(tempoEsperaDataMs, rssi, snr);
-
-  if (data.length() == 0) {
+  if (!pacote.recebido) {
     Serial.println("Timeout: nenhum DATA recebido.");
     registrarCsvTimeout(cicloAtual);
     Serial.println("======================");
@@ -178,33 +106,32 @@ void loop() {
   }
 
   Serial.print("Recebido: ");
-  Serial.println(data);
+  Serial.println(pacote.mensagem);
   Serial.print("RSSI: ");
-  Serial.print(rssi);
+  Serial.print(pacote.rssi);
   Serial.println(" dBm");
   Serial.print("SNR: ");
-  Serial.print(snr);
+  Serial.print(pacote.snr);
   Serial.println(" dB");
 
-  String tipo = extrairCampo(data, "TIPO");
-  String aluno = extrairCampo(data, "ALUNO");
-  String seq = extrairCampo(data, "SEQ");
+  String aluno = extrairCampoIcnp(pacote.mensagem, "ALUNO");
+  String seq = extrairCampoIcnp(pacote.mensagem, "SEQ");
 
-  if (tipo != "DATA" || aluno.length() == 0 || seq.length() == 0) {
+  if (!pacoteEhDoTipoIcnp(pacote.mensagem, "DATA") || aluno.length() == 0 || seq.length() == 0) {
     Serial.println("Pacote invalido para este ciclo.");
-    registrarCsvPacoteInvalido(cicloAtual, rssi, snr);
+    registrarCsvPacoteInvalido(cicloAtual, pacote.rssi, pacote.snr);
     Serial.println("======================");
     return;
   }
 
-  String ack = "ICNP;TIPO=ACK;PROFESSOR=1;ALUNO=" + aluno + ";SEQ=" + seq + ";CICLO=" + String(cicloAtual);
+  String ack = montarAckIcnp(aluno, seq, cicloAtual);
 
   Serial.print("Enviando: ");
   Serial.println(ack);
 
-  enviarMensagem(ack);
+  enviarMensagemLoRa(ack);
 
-  registrarCsvSucesso(cicloAtual, aluno, seq, rssi, snr);
+  registrarCsvSucesso(cicloAtual, aluno, seq, pacote.rssi, pacote.snr);
 
   Serial.println("Ciclo concluido com ACK.");
   Serial.println("======================");
