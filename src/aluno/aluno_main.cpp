@@ -17,10 +17,11 @@ void setup() {
 
   Serial.println();
   Serial.println("================================");
-  Serial.println("ALUNO - ICNP MINIMO");
+  Serial.println("ALUNO - ICNP COM VALIDACAO DE ACK");
   Serial.println("Placa: Heltec WiFi LoRa 32 V2");
   Serial.println("Frequencia: 915 MHz");
   Serial.println("ID_ALUNO: " + ID_ALUNO);
+  Serial.println("Fluxo: aguarda BEACON -> envia DATA -> valida ACK");
   Serial.println("================================");
 
   iniciarRadioLoRa();
@@ -36,16 +37,25 @@ void loop() {
     return;
   }
 
-  if (!pacoteEhDoTipoIcnp(beacon.mensagem, "BEACON")) {
+  if (!pacoteEhDoTipoIcnp(beacon.mensagem, ICNP_TIPO_BEACON)) {
     return;
   }
 
-  String ciclo = extrairCampoIcnp(beacon.mensagem, "CICLO");
+  String cicloTexto = extrairCampoIcnp(beacon.mensagem, "CICLO");
+
+  if (cicloTexto.length() == 0) {
+    Serial.println("BEACON invalido: campo CICLO ausente.");
+    return;
+  }
+
+  unsigned long ciclo = cicloTexto.toInt();
 
   Serial.println();
   Serial.println("===== BEACON RECEBIDO =====");
   Serial.print("Mensagem: ");
   Serial.println(beacon.mensagem);
+  Serial.print("Ciclo: ");
+  Serial.println(ciclo);
   Serial.print("RSSI BEACON: ");
   Serial.print(beacon.rssi);
   Serial.println(" dBm");
@@ -63,9 +73,18 @@ void loop() {
 
   ultimoEnvioData = agora;
 
-  String data = montarDataIcnp(ID_ALUNO, contadorSeq, ciclo, 72, 98);
+  int frequenciaCardiacaSimulada = 72;
+  int spo2Simulado = 98;
 
-  Serial.print("Enviando: ");
+  String data = montarDataIcnp(
+    ID_ALUNO,
+    contadorSeq,
+    ciclo,
+    frequenciaCardiacaSimulada,
+    spo2Simulado
+  );
+
+  Serial.print("Enviando DATA: ");
   Serial.println(data);
 
   enviarMensagemLoRa(data);
@@ -88,13 +107,10 @@ void loop() {
   Serial.print(ack.snr);
   Serial.println(" dB");
 
-  String alunoAck = extrairCampoIcnp(ack.mensagem, "ALUNO");
-  String seqAck = extrairCampoIcnp(ack.mensagem, "SEQ");
-
-  if (pacoteEhDoTipoIcnp(ack.mensagem, "ACK") && alunoAck == ID_ALUNO && seqAck == String(contadorSeq)) {
+  if (ackIcnpConfere(ack.mensagem, ID_ALUNO, contadorSeq, ciclo)) {
     Serial.println("ACK valido. Ciclo ICNP concluido.");
   } else {
-    Serial.println("ACK invalido ou pertencente a outro pacote.");
+    Serial.println("ACK invalido: aluno, sequencia ou ciclo nao conferem.");
   }
 
   Serial.println("===========================");
