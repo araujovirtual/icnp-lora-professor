@@ -24,7 +24,8 @@ String montarDataIcnp(
   const String &batAluno,
   long ir,
   long red,
-  bool dedoDetectado
+  bool dedoDetectado,
+  const String &qualidade
 ) {
   String mensagem = "";
 
@@ -49,6 +50,8 @@ String montarDataIcnp(
   mensagem += String(red);
   mensagem += ";DEDO=";
   mensagem += dedoDetectado ? "1" : "0";
+  mensagem += ";QUAL=";
+  mensagem += qualidade;
 
   return mensagem;
 }

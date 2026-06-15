@@ -1,24 +1,33 @@
-#ifndef DISPLAY_OLED_H
-#define DISPLAY_OLED_H
+#pragma once
 
 #include <Arduino.h>
 
 void iniciarDisplayOled();
 
-void mostrarTelaProfessor(
-  unsigned long ciclo,
-  const String &alvo,
-  const String &statusAck,
-  int rssi,
-  const String &energia
-);
-
 void mostrarTelaAluno(
   const String &idAluno,
   unsigned long ciclo,
   unsigned long sequencia,
-  const String &statusAck,
+  const String &status,
   const String &energia
 );
 
-#endif
+void mostrarTelaAlunoSensor(
+  const String &idAluno,
+  unsigned long ciclo,
+  unsigned long sequencia,
+  const String &status,
+  const String &energia,
+  int frequenciaCardiaca,
+  int spo2,
+  bool dedoDetectado,
+  const String &qualidade
+);
+
+void mostrarTelaProfessor(
+  unsigned long ciclo,
+  const String &alvo,
+  const String &status,
+  int rssi,
+  const String &energia
+);

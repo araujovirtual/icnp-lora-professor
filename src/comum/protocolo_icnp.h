@@ -19,7 +19,8 @@ String montarDataIcnp(
   const String &batAluno,
   long ir,
   long red,
-  bool dedoDetectado
+  bool dedoDetectado,
+  const String &qualidade
 );
 
 String montarAckIcnp(
