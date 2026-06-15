@@ -19,6 +19,16 @@ void iniciarRadioLoRa() {
   LoRa.setSpreadingFactor(LORA_SPREADING_FACTOR);
   LoRa.setSignalBandwidth(LORA_SIGNAL_BANDWIDTH);
   LoRa.setCodingRate4(LORA_CODING_RATE);
+
+  Serial.println("LoRa configurado:");
+  Serial.print("Frequencia: ");
+  Serial.println(FREQUENCIA_LORA);
+  Serial.print("Spreading Factor: ");
+  Serial.println(LORA_SPREADING_FACTOR);
+  Serial.print("Bandwidth: ");
+  Serial.println(LORA_SIGNAL_BANDWIDTH);
+  Serial.print("Coding Rate: 4/");
+  Serial.println(LORA_CODING_RATE);
 }
 
 void enviarMensagemLoRa(const String &mensagem) {
@@ -50,6 +60,8 @@ PacoteRecebido receberMensagemLoRa(unsigned long tempoLimiteMs) {
 
       return pacote;
     }
+
+    delay(1);
   }
 
   return pacote;

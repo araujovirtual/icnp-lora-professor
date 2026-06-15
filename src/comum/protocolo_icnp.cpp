@@ -1,10 +1,18 @@
 #include "protocolo_icnp.h"
 
-String montarBeaconIcnp(unsigned long ciclo) {
-  return String(ICNP_ASSINATURA) +
-         ";TIPO=" + String(ICNP_TIPO_BEACON) +
-         ";PROFESSOR=1" +
-         ";CICLO=" + String(ciclo);
+String montarBeaconIcnp(unsigned long ciclo, const String &alvo) {
+  String mensagem = "";
+
+  mensagem += ICNP_ASSINATURA;
+  mensagem += ";TIPO=";
+  mensagem += ICNP_TIPO_BEACON;
+  mensagem += ";PROFESSOR=1";
+  mensagem += ";CICLO=";
+  mensagem += String(ciclo);
+  mensagem += ";ALVO=";
+  mensagem += alvo;
+
+  return mensagem;
 }
 
 String montarDataIcnp(
@@ -12,15 +20,37 @@ String montarDataIcnp(
   unsigned long sequencia,
   unsigned long ciclo,
   int frequenciaCardiaca,
-  int spo2
+  int spo2,
+  const String &batAluno,
+  long ir,
+  long red,
+  bool dedoDetectado
 ) {
-  return String(ICNP_ASSINATURA) +
-         ";TIPO=" + String(ICNP_TIPO_DATA) +
-         ";ALUNO=" + idAluno +
-         ";SEQ=" + String(sequencia) +
-         ";CICLO=" + String(ciclo) +
-         ";FC=" + String(frequenciaCardiaca) +
-         ";SPO2=" + String(spo2);
+  String mensagem = "";
+
+  mensagem += ICNP_ASSINATURA;
+  mensagem += ";TIPO=";
+  mensagem += ICNP_TIPO_DATA;
+  mensagem += ";ALUNO=";
+  mensagem += idAluno;
+  mensagem += ";SEQ=";
+  mensagem += String(sequencia);
+  mensagem += ";CICLO=";
+  mensagem += String(ciclo);
+  mensagem += ";FC=";
+  mensagem += String(frequenciaCardiaca);
+  mensagem += ";SPO2=";
+  mensagem += String(spo2);
+  mensagem += ";BAT=";
+  mensagem += batAluno;
+  mensagem += ";IR=";
+  mensagem += String(ir);
+  mensagem += ";RED=";
+  mensagem += String(red);
+  mensagem += ";DEDO=";
+  mensagem += dedoDetectado ? "1" : "0";
+
+  return mensagem;
 }
 
 String montarAckIcnp(
@@ -28,22 +58,32 @@ String montarAckIcnp(
   unsigned long sequencia,
   unsigned long ciclo
 ) {
-  return String(ICNP_ASSINATURA) +
-         ";TIPO=" + String(ICNP_TIPO_ACK) +
-         ";PROFESSOR=1" +
-         ";ALUNO=" + idAluno +
-         ";SEQ=" + String(sequencia) +
-         ";CICLO=" + String(ciclo);
+  String mensagem = "";
+
+  mensagem += ICNP_ASSINATURA;
+  mensagem += ";TIPO=";
+  mensagem += ICNP_TIPO_ACK;
+  mensagem += ";PROFESSOR=1";
+  mensagem += ";ALUNO=";
+  mensagem += idAluno;
+  mensagem += ";SEQ=";
+  mensagem += String(sequencia);
+  mensagem += ";CICLO=";
+  mensagem += String(ciclo);
+
+  return mensagem;
 }
 
 String extrairCampoIcnp(const String &mensagem, const String &campo) {
-  int inicio = mensagem.indexOf(campo + "=");
+  String chave = campo + "=";
+
+  int inicio = mensagem.indexOf(chave);
 
   if (inicio < 0) {
     return "";
   }
 
-  inicio += campo.length() + 1;
+  inicio += chave.length();
 
   int fim = mensagem.indexOf(";", inicio);
 
@@ -54,24 +94,18 @@ String extrairCampoIcnp(const String &mensagem, const String &campo) {
   return mensagem.substring(inicio, fim);
 }
 
-bool pacoteEhDoTipoIcnp(const String &mensagem, const String &tipoEsperado) {
+bool pacoteIcnpValido(const String &mensagem) {
+  return mensagem.startsWith(ICNP_ASSINATURA);
+}
+
+bool pacoteEhDoTipoIcnp(const String &mensagem, const String &tipo) {
   if (!pacoteIcnpValido(mensagem)) {
     return false;
   }
 
-  return extrairCampoIcnp(mensagem, "TIPO") == tipoEsperado;
-}
+  String tipoRecebido = extrairCampoIcnp(mensagem, "TIPO");
 
-bool pacoteIcnpValido(const String &mensagem) {
-  if (!mensagem.startsWith(ICNP_ASSINATURA)) {
-    return false;
-  }
-
-  if (extrairCampoIcnp(mensagem, "TIPO") == "") {
-    return false;
-  }
-
-  return true;
+  return tipoRecebido == tipo;
 }
 
 bool ackIcnpConfere(
@@ -85,18 +119,18 @@ bool ackIcnpConfere(
   }
 
   String alunoRecebido = extrairCampoIcnp(mensagem, "ALUNO");
-  String sequenciaRecebida = extrairCampoIcnp(mensagem, "SEQ");
+  String seqRecebida = extrairCampoIcnp(mensagem, "SEQ");
   String cicloRecebido = extrairCampoIcnp(mensagem, "CICLO");
 
   if (alunoRecebido != idAluno) {
     return false;
   }
 
-  if (sequenciaRecebida.toInt() != (long)sequencia) {
+  if (seqRecebida.toInt() != sequencia) {
     return false;
   }
 
-  if (cicloRecebido.toInt() != (long)ciclo) {
+  if (cicloRecebido.toInt() != ciclo) {
     return false;
   }
 
