@@ -9,7 +9,7 @@
 #include "sensor_fisiologico.h"
 
 #ifndef ID_ALUNO_CONFIG
-#define ID_ALUNO_CONFIG "1"
+#define ID_ALUNO_CONFIG "2"
 #endif
 
 const String ID_ALUNO = ID_ALUNO_CONFIG;

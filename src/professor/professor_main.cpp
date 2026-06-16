@@ -9,8 +9,8 @@
 const unsigned long intervaloBeaconMs = 2000;
 const unsigned long tempoEsperaDataMs = 1200;
 
-const String alunos[] = {"1"};
-const int totalAlunos = 1;
+const String alunos[] = {"1","2"};
+const int totalAlunos = 2;
 
 unsigned long ultimoBeacon = 0;
 unsigned long cicloAtual = 0;
