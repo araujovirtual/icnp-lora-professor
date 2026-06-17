@@ -4,13 +4,28 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include "freertos/semphr.h"
+#include "config_wifi.h"
 
 // ============================================================
 // CONFIGURACAO DO WIFI / API
 // ============================================================
 
-static const char* WIFI_SSID = "JUMAMIHEI_2";
-static const char* WIFI_SENHA = "123mudarJXYZ";
+static const char* WIFI_AP_SETUP_SSID = "ICNP_PROFESSOR_SETUP";
+static const char* WIFI_AP_SETUP_SENHA = "icnp12345"; // minimo 8 caracteres
+static const unsigned long WIFI_TEMPO_CONEXAO_MS = 15000;
+
+static bool wifiModoSetup = false;
+static String wifiSsidAtual = "";
+
+static String wifiScanJsonCache = "{\"redes\":[]}";
+static unsigned long wifiScanCacheMs = 0;
+static int wifiScanTotalCache = 0;
+static bool wifiScanEmAndamento = false;
+static bool wifiScanSolicitado = false;
+static String wifiScanMensagem = "Lista ainda nao atualizada.";
+static SemaphoreHandle_t mutexScanWifi = NULL;
+static TaskHandle_t handleTaskScanWifi = NULL;
+static const unsigned long WIFI_SCAN_INTERVALO_TAREFA_MS = 250;
 
 static WebServer servidor(80);
 
@@ -808,7 +823,21 @@ atualizar();
 static String aspas(const String& valor) {
   String s;
   s += char(34);
-  s += valor;
+  for (size_t i = 0; i < valor.length(); i++) {
+    char c = valor.charAt(i);
+    if (c == '\\' || c == '"') {
+      s += '\\';
+      s += c;
+    } else if (c == '\n') {
+      s += "\\n";
+    } else if (c == '\r') {
+      s += "\\r";
+    } else if (c == '\t') {
+      s += "\\t";
+    } else {
+      s += c;
+    }
+  }
   s += char(34);
   return s;
 }
@@ -880,6 +909,99 @@ static void campoTexto(String& json, bool& primeiro, const char* nome, const Str
   json += aspas(nome);
   json += ':';
   json += aspas(valor);
+}
+
+// ============================================================
+// CACHE / MUTEX DA VARREDURA WI-FI
+// ============================================================
+
+static void garantirMutexScanWifi() {
+  if (mutexScanWifi == NULL) {
+    mutexScanWifi = xSemaphoreCreateMutex();
+  }
+}
+
+static void publicarEstadoScan(bool emAndamento, const String& mensagem) {
+  garantirMutexScanWifi();
+
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    wifiScanEmAndamento = emAndamento;
+    wifiScanMensagem = mensagem;
+    xSemaphoreGive(mutexScanWifi);
+  }
+}
+
+static void publicarCacheScan(const String& json, int total, const String& mensagem) {
+  garantirMutexScanWifi();
+
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    wifiScanJsonCache = json;
+    wifiScanTotalCache = total;
+    wifiScanCacheMs = millis();
+    wifiScanMensagem = mensagem;
+    wifiScanEmAndamento = false;
+    xSemaphoreGive(mutexScanWifi);
+  }
+}
+
+static String obterCacheScan() {
+  garantirMutexScanWifi();
+
+  String cache = "{\"redes\":[]}";
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    cache = wifiScanJsonCache;
+    xSemaphoreGive(mutexScanWifi);
+  }
+
+  return cache;
+}
+
+static int obterTotalCacheScan() {
+  garantirMutexScanWifi();
+
+  int total = 0;
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    total = wifiScanTotalCache;
+    xSemaphoreGive(mutexScanWifi);
+  }
+
+  return total;
+}
+
+static bool obterScanEmAndamento() {
+  garantirMutexScanWifi();
+
+  bool valor = false;
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    valor = wifiScanEmAndamento;
+    xSemaphoreGive(mutexScanWifi);
+  }
+
+  return valor;
+}
+
+static String obterMensagemScan() {
+  garantirMutexScanWifi();
+
+  String msg;
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    msg = wifiScanMensagem;
+    xSemaphoreGive(mutexScanWifi);
+  }
+
+  return msg;
+}
+
+static unsigned long obterIdadeCacheScanMs() {
+  garantirMutexScanWifi();
+
+  unsigned long idade = 0;
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    idade = wifiScanCacheMs > 0 ? (millis() - wifiScanCacheMs) : 0;
+    xSemaphoreGive(mutexScanWifi);
+  }
+
+  return idade;
 }
 
 // ============================================================
@@ -963,6 +1085,522 @@ static String jsonAluno(const EstadoAlunoAPI& e) {
   return json;
 }
 
+
+// ============================================================
+// WIFI / ADMIN / PROVISIONAMENTO
+// ============================================================
+
+static String htmlEscape(const String& valor) {
+  String s = valor;
+  s.replace("&", "&amp;");
+  s.replace("<", "&lt;");
+  s.replace(">", "&gt;");
+  s.replace("\"", "&quot;");
+  s.replace("'", "&#39;");
+  return s;
+}
+
+static String modoWifiTexto() {
+  if (wifiModoSetup) return "AP_SETUP";
+  if (WiFi.status() == WL_CONNECTED) return "STA";
+  return "DESCONECTADO";
+}
+
+static String ipAtualTexto() {
+  if (wifiModoSetup) return WiFi.softAPIP().toString();
+  if (WiFi.status() == WL_CONNECTED) return WiFi.localIP().toString();
+  return "0.0.0.0";
+}
+
+static bool conectarWiFiStation(const ConfigWiFi& cfg) {
+  wifiModoSetup = false;
+
+  if (!cfg.configurado) {
+    Serial.println("Wi-Fi ainda nao configurado na NVS.");
+    return false;
+  }
+
+  wifiSsidAtual = cfg.ssid;
+
+  Serial.println("Iniciando API Professor em modo Wi-Fi STA...");
+  Serial.print("Rede salva: ");
+  Serial.println(cfg.ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  WiFi.begin(cfg.ssid.c_str(), cfg.senha.c_str());
+
+  unsigned long inicio = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - inicio < WIFI_TEMPO_CONEXAO_MS) {
+    delay(250);
+    Serial.print(".");
+  }
+
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Falha ao conectar na rede salva.");
+    return false;
+  }
+
+  Serial.print("Wi-Fi conectado em: ");
+  Serial.println(cfg.ssid);
+  Serial.print("IP STA: ");
+  Serial.println(WiFi.localIP());
+
+  return true;
+}
+
+static String montarJsonRedesDoScan(int n, int& totalValido) {
+  String json = "{";
+  json += "\"redes\":[";
+
+  bool primeiro = true;
+  totalValido = 0;
+
+  if (n > 0) {
+    for (int i = 0; i < n; i++) {
+      String ssid = WiFi.SSID(i);
+      if (ssid.length() == 0) {
+        continue;
+      }
+
+      if (!primeiro) {
+        json += ',';
+      }
+      primeiro = false;
+      totalValido++;
+
+      json += "{";
+      json += "\"ssid\":";
+      json += aspas(ssid);
+      json += ",\"rssi\":";
+      json += String(WiFi.RSSI(i));
+      json += ",\"canal\":";
+      json += String(WiFi.channel(i));
+      json += ",\"aberta\":";
+      json += (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "true" : "false";
+      json += "}";
+    }
+  }
+
+  json += "]}";
+  return json;
+}
+
+static void executarScanWifi(const char* origem) {
+  Serial.print("API admin: varredura Wi-Fi iniciada por ");
+  Serial.println(origem);
+
+  publicarEstadoScan(true, "Buscando redes Wi-Fi proximas...");
+
+  if (wifiModoSetup) {
+    // Mantem o SoftAP e habilita a interface station para permitir scan.
+    // A pagina ja recebeu resposta antes da varredura; se houver uma oscilacao curta,
+    // o navegador apenas tentara consultar o status novamente.
+    WiFi.mode(WIFI_AP_STA);
+  } else {
+    WiFi.mode(WIFI_STA);
+  }
+
+  WiFi.setSleep(false);
+  delay(100);
+
+  int n = WiFi.scanNetworks(false, true);
+  int totalValido = 0;
+  String json = montarJsonRedesDoScan(n, totalValido);
+
+  WiFi.scanDelete();
+
+  String msg;
+  if (n < 0) {
+    msg = "Falha ao buscar redes. Tente novamente ou use SSID manual.";
+    totalValido = 0;
+    json = "{\"redes\":[]}";
+  } else if (totalValido == 0) {
+    msg = "Nenhuma rede encontrada. Aproxime o Professor do roteador ou digite manualmente.";
+  } else {
+    msg = String(totalValido) + " rede(s) encontrada(s).";
+  }
+
+  publicarCacheScan(json, totalValido, msg);
+
+  Serial.print("API admin: varredura concluida. Redes validas: ");
+  Serial.println(totalValido);
+}
+
+static void atualizarCacheRedesWifi() {
+  executarScanWifi("inicializacao");
+}
+
+static void tarefaScanWifi(void* parametro) {
+  (void)parametro;
+
+  for (;;) {
+    bool executar = false;
+
+    garantirMutexScanWifi();
+    if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(50)) == pdTRUE) {
+      if (wifiScanSolicitado && !wifiScanEmAndamento) {
+        wifiScanSolicitado = false;
+        executar = true;
+      }
+      xSemaphoreGive(mutexScanWifi);
+    }
+
+    if (executar) {
+      executarScanWifi("/api/scan/atualizar");
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(WIFI_SCAN_INTERVALO_TAREFA_MS));
+  }
+}
+
+static void iniciarWiFiSetupAP() {
+  wifiModoSetup = true;
+  wifiSsidAtual = WIFI_AP_SETUP_SSID;
+
+  Serial.println("Iniciando rede fallback para configuracao Wi-Fi...");
+
+  // A busca de redes e feita antes de ativar o SoftAP.
+  // Isso evita ERR_NETWORK_CHANGED/timeout no navegador durante a varredura.
+  atualizarCacheRedesWifi();
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+
+  bool ok = WiFi.softAP(WIFI_AP_SETUP_SSID, WIFI_AP_SETUP_SENHA);
+
+  if (ok) {
+    Serial.println("Rede de configuracao ativa.");
+    Serial.print("SSID: ");
+    Serial.println(WIFI_AP_SETUP_SSID);
+    Serial.print("Senha: ");
+    Serial.println(WIFI_AP_SETUP_SENHA);
+    Serial.print("Acesse: http://");
+    Serial.println(WiFi.softAPIP());
+    Serial.println("Pagina admin: /api/admin");
+  } else {
+    Serial.println("Falha ao iniciar SoftAP de configuracao.");
+  }
+}
+
+static void responderAdmin() {
+  ConfigWiFi cfg = carregarConfigWiFi();
+
+  String html = R"ICNPADMIN(
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin Wi-Fi ICNP</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#080c12;color:#eaf1fb}
+  .wrap{max-width:1120px;margin:0 auto;padding:14px}
+  .layout{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+  .card{background:#101823;border:1px solid #27374c;border-radius:15px;padding:14px}
+  h1{margin:0 0 6px;font-size:24px}
+  .sub{color:#9daec5;font-size:14px;margin-bottom:10px}
+  label{display:block;font-weight:700;margin:10px 0 6px}
+  input,select{width:100%;padding:11px;border-radius:10px;border:1px solid #32435a;background:#0d131c;color:#eaf1fb;font-size:15px}
+  button,.btn{display:inline-block;background:#143824;border:1px solid #2d8a59;color:#7bf0a7;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;text-decoration:none;margin-top:8px}
+  .danger{background:#4a1b23;border-color:#8d3342;color:#ff9cab}
+  .muted{color:#9daec5;font-size:13px;margin-top:7px}
+  .ok{color:#7bf0a7}.warn{color:#ffd36b}
+  code{background:#0d131c;border:1px solid #263448;border-radius:6px;padding:2px 5px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .k{color:#9daec5;font-size:12px}.v{font-weight:700;margin-top:3px}
+  .full{grid-column:1 / -1}
+  @media(max-width:860px){.layout{grid-template-columns:1fr}.wrap{padding:10px}h1{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="layout">
+    <div class="card">
+      <h1>Admin Wi-Fi do Professor ICNP</h1>
+      <div class="sub">Configure a rede Wi-Fi do ambiente sem recompilar o firmware.</div>
+      <div class="grid">
+        <div><div class="k">Modo atual</div><div class="v">__MODO__</div></div>
+        <div><div class="k">IP atual</div><div class="v">__IP__</div></div>
+        <div><div class="k">SSID salvo</div><div class="v">__SSID_ATUAL__</div></div>
+        <div><div class="k">Dashboard</div><div class="v"><a class="btn" href="/">Abrir painel</a></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Redes Wi-Fi proximas</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" onclick="buscarRedes()">Carregar lista</button>
+        <button type="button" onclick="atualizarRedes()">Atualizar lista</button>
+      </div>
+      <div id="scanStatus" class="muted">Use a lista em cache ou atualize sem reiniciar o Professor.</div>
+
+      <label>Selecionar rede encontrada</label>
+      <select id="redesEncontradas" onchange="usarRedeSelecionada()">
+        <option value="">Clique em carregar lista</option>
+      </select>
+    </div>
+
+    <div class="card">
+      <form method="POST" action="/api/config">
+        <label>Nome da rede Wi-Fi (SSID)</label>
+        <input id="ssid" name="ssid" maxlength="64" placeholder="Ex.: MinhaRede" value="__SSID_VALOR__" required>
+
+        <label>Senha da rede Wi-Fi</label>
+        <input name="senha" type="password" maxlength="64" placeholder="Senha da rede">
+
+        <button type="submit">Salvar rede Wi-Fi</button>
+      </form>
+      <p class="muted">Ao salvar, o Professor reinicia e tenta entrar na rede configurada em modo station.</p>
+    </div>
+
+    <div class="card">
+      <form method="POST" action="/api/config/apagar" onsubmit="return confirm('Apagar a rede salva?');">
+        <button class="danger" type="submit">Apagar configuracao salva</button>
+      </form>
+      <p class="sub">Rede fallback: <code>ICNP_PROFESSOR_SETUP</code>. IP padrao: <code>192.168.4.1</code>.</p>
+      <p class="muted">Se a rede desejada nao aparecer, clique em <b>Atualizar lista</b> ou digite o SSID manualmente.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+async function buscarRedes(){
+  const status = document.getElementById('scanStatus');
+  const select = document.getElementById('redesEncontradas');
+
+  status.textContent = 'Carregando lista salva no Professor...';
+  status.className = 'muted warn';
+  select.innerHTML = '<option value="">Carregando...</option>';
+
+  try {
+    const resp = await fetch('/api/scan?t=' + Date.now());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+    const dados = await resp.json();
+    select.innerHTML = '';
+
+    if (!dados.redes || dados.redes.length === 0) {
+      select.innerHTML = '<option value="">Nenhuma rede encontrada</option>';
+      status.textContent = 'Nenhuma rede em cache. Clique em Atualizar lista ou digite manualmente.';
+      status.className = 'muted warn';
+      return;
+    }
+
+    select.appendChild(new Option('Selecione uma rede...', ''));
+
+    dados.redes.forEach(function(r){
+      const segura = r.aberta ? 'aberta' : 'segura';
+      const texto = r.ssid + ' | RSSI ' + r.rssi + ' dBm | ' + segura;
+      select.appendChild(new Option(texto, r.ssid));
+    });
+
+    status.textContent = dados.redes.length + ' rede(s) carregada(s). Selecione uma para preencher o SSID automaticamente.';
+    status.className = 'muted ok';
+  } catch(e) {
+    select.innerHTML = '<option value="">Falha ao carregar redes</option>';
+    status.textContent = 'Falha ao carregar a lista. Tente atualizar ou digite o SSID manualmente.';
+    status.className = 'muted warn';
+  }
+}
+
+async function atualizarRedes(){
+  const status = document.getElementById('scanStatus');
+  status.textContent = 'Solicitando nova varredura. Aguarde alguns segundos...';
+  status.className = 'muted warn';
+
+  try {
+    const resp = await fetch('/api/scan/atualizar?t=' + Date.now(), {method:'POST'});
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    aguardarScan();
+  } catch(e) {
+    status.textContent = 'Falha ao iniciar a varredura. Digite o SSID manualmente ou tente novamente.';
+    status.className = 'muted warn';
+  }
+}
+
+async function aguardarScan(){
+  const status = document.getElementById('scanStatus');
+
+  try {
+    const resp = await fetch('/api/scan/status?t=' + Date.now());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const dados = await resp.json();
+
+    if (dados.escaneando) {
+      status.textContent = 'Varredura em andamento...';
+      status.className = 'muted warn';
+      setTimeout(aguardarScan, 1000);
+      return;
+    }
+
+    status.textContent = dados.mensagem || 'Varredura finalizada.';
+    status.className = dados.total > 0 ? 'muted ok' : 'muted warn';
+    buscarRedes();
+  } catch(e) {
+    // Durante a varredura o AP pode oscilar por instantes. Tentar novamente e manter a pagina viva.
+    status.textContent = 'Aguardando resposta do Professor...';
+    status.className = 'muted warn';
+    setTimeout(aguardarScan, 1500);
+  }
+}
+
+function usarRedeSelecionada(){
+  const select = document.getElementById('redesEncontradas');
+  if (select.value) {
+    document.getElementById('ssid').value = select.value;
+  }
+}
+</script>
+</body>
+</html>
+)ICNPADMIN";
+
+  String ssidVisivel = cfg.configurado ? cfg.ssid : "NAO CONFIGURADO";
+
+  html.replace("__MODO__", htmlEscape(modoWifiTexto()));
+  html.replace("__IP__", htmlEscape(ipAtualTexto()));
+  html.replace("__SSID_ATUAL__", htmlEscape(ssidVisivel));
+  html.replace("__SSID_VALOR__", cfg.configurado ? htmlEscape(cfg.ssid) : "");
+
+  servidor.send(200, "text/html; charset=utf-8", html);
+}
+
+static void responderScanWifi() {
+  Serial.println("API admin: enviando cache de redes Wi-Fi.");
+
+  servidor.sendHeader("Access-Control-Allow-Origin", "*");
+  servidor.sendHeader("Cache-Control", "no-store");
+  servidor.send(200, "application/json", obterCacheScan());
+}
+
+static void responderAtualizarScanWifi() {
+  garantirMutexScanWifi();
+
+  bool jaEscaneando = false;
+
+  if (xSemaphoreTake(mutexScanWifi, pdMS_TO_TICKS(100)) == pdTRUE) {
+    jaEscaneando = wifiScanEmAndamento;
+    if (!wifiScanEmAndamento) {
+      wifiScanSolicitado = true;
+      wifiScanMensagem = "Nova varredura solicitada.";
+    }
+    xSemaphoreGive(mutexScanWifi);
+  }
+
+  String json = "{";
+  bool primeiro = true;
+  campoBool(json, primeiro, "iniciado", !jaEscaneando);
+  campoBool(json, primeiro, "escaneando", jaEscaneando || !jaEscaneando);
+  campoTexto(json, primeiro, "mensagem", jaEscaneando ? "Varredura ja esta em andamento." : "Varredura solicitada.");
+  json += "}";
+
+  servidor.sendHeader("Access-Control-Allow-Origin", "*");
+  servidor.sendHeader("Cache-Control", "no-store");
+  servidor.send(200, "application/json", json);
+}
+
+static void responderStatusScanWifi() {
+  bool emAndamento = obterScanEmAndamento();
+  int total = obterTotalCacheScan();
+  String msg = obterMensagemScan();
+  unsigned long idade = obterIdadeCacheScanMs();
+
+  String json = "{";
+  bool primeiro = true;
+  campoBool(json, primeiro, "escaneando", emAndamento);
+  campoInt(json, primeiro, "total", total);
+  campoULong(json, primeiro, "idade_cache_ms", idade);
+  campoTexto(json, primeiro, "mensagem", msg);
+  json += "}";
+
+  servidor.sendHeader("Access-Control-Allow-Origin", "*");
+  servidor.sendHeader("Cache-Control", "no-store");
+  servidor.send(200, "application/json", json);
+}
+
+static void responderConfigJson() {
+  ConfigWiFi cfg = carregarConfigWiFi();
+
+  String json = "{";
+  bool primeiro = true;
+
+  campoTexto(json, primeiro, "modo", modoWifiTexto());
+  campoTexto(json, primeiro, "ip", ipAtualTexto());
+  campoBool(json, primeiro, "configurado", cfg.configurado);
+  campoTexto(json, primeiro, "ssid", cfg.configurado ? cfg.ssid : "");
+  campoBool(json, primeiro, "conectado", WiFi.status() == WL_CONNECTED);
+
+  json += "}";
+
+  servidor.sendHeader("Access-Control-Allow-Origin", "*");
+  servidor.send(200, "application/json", json);
+}
+
+static void responderSalvarConfig() {
+  if (!servidor.hasArg("ssid")) {
+    servidor.send(400, "text/plain; charset=utf-8", "Campo SSID ausente.");
+    return;
+  }
+
+  String ssid = servidor.arg("ssid");
+  String senha = servidor.hasArg("senha") ? servidor.arg("senha") : "";
+  ssid.trim();
+
+  if (ssid.length() == 0) {
+    servidor.send(400, "text/plain; charset=utf-8", "SSID vazio.");
+    return;
+  }
+
+  if (!salvarConfigWiFi(ssid, senha)) {
+    servidor.send(500, "text/plain; charset=utf-8", "Falha ao salvar configuracao Wi-Fi.");
+    return;
+  }
+
+  String html = R"ICNPSALVO(
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wi-Fi salvo</title>
+<style>body{font-family:Arial;background:#080c12;color:#eaf1fb;padding:28px} .box{max-width:680px;margin:auto;background:#101823;border:1px solid #27374c;border-radius:16px;padding:20px} code{background:#0d131c;border:1px solid #263448;border-radius:6px;padding:2px 5px}</style>
+</head>
+<body><div class="box">
+<h1>Rede Wi-Fi salva</h1>
+<p>SSID configurado: <code>__SSID__</code></p>
+<p>O Professor sera reiniciado para tentar conectar em modo station.</p>
+<p>Se a senha estiver errada ou a rede nao estiver disponivel, a rede fallback <code>ICNP_PROFESSOR_SETUP</code> sera aberta novamente.</p>
+</div>
+<script>setTimeout(function(){ fetch('/api/reiniciar').catch(function(){}); }, 1200);</script>
+</body></html>
+)ICNPSALVO";
+
+  html.replace("__SSID__", htmlEscape(ssid));
+  servidor.send(200, "text/html; charset=utf-8", html);
+
+  delay(1500);
+  ESP.restart();
+}
+
+static void responderApagarConfig() {
+  apagarConfigWiFi();
+
+  servidor.send(200, "text/plain; charset=utf-8", "Configuracao Wi-Fi apagada. Reiniciando...");
+  delay(500);
+  ESP.restart();
+}
+
+static void responderReiniciar() {
+  servidor.send(200, "text/plain; charset=utf-8", "Reiniciando Professor ICNP...");
+  delay(500);
+  ESP.restart();
+}
+
 // ============================================================
 // ENDPOINT /api/status
 // ============================================================
@@ -988,8 +1626,8 @@ static void responderStatus() {
   campoInt(json, primeiro, "professor", 1);
   campoTexto(json, primeiro, "sistema", "ICNP_PPG");
   campoTexto(json, primeiro, "api", "ativa");
-  campoTexto(json, primeiro, "wifi", "STA");
-  campoTexto(json, primeiro, "ip", WiFi.localIP().toString());
+  campoTexto(json, primeiro, "wifi", modoWifiTexto());
+  campoTexto(json, primeiro, "ip", ipAtualTexto());
   campoULong(json, primeiro, "tempo_professor_ms", millis());
 
   separador(json, primeiro);
@@ -1040,41 +1678,49 @@ void iniciarApiProfessor() {
   garantirMutexEstado();
   inicializarEstadosApi();
 
-  Serial.println("Iniciando API Professor em modo Wi-Fi STA...");
-  Serial.print("Rede: ");
-  Serial.println(WIFI_SSID);
+  iniciarConfigWiFi();
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  ConfigWiFi cfg = carregarConfigWiFi();
+  bool conectadoSta = conectarWiFiStation(cfg);
 
-  WiFi.begin(WIFI_SSID, WIFI_SENHA);
-
-  unsigned long inicio = millis();
-
-  while (WiFi.status() != WL_CONNECTED && millis() - inicio < 15000) {
-    delay(250);
-    Serial.print(".");
-  }
-
-  Serial.println();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Falha ao conectar Wi-Fi. API nao iniciada.");
-    return;
+  if (!conectadoSta) {
+    iniciarWiFiSetupAP();
   }
 
   servidor.on("/", responderPagina);
   servidor.on("/api/status", responderStatus);
+  servidor.on("/api/admin", HTTP_GET, responderAdmin);
+  servidor.on("/admin", HTTP_GET, responderAdmin);
+  servidor.on("/api/scan", HTTP_GET, responderScanWifi);
+  servidor.on("/api/scan/atualizar", HTTP_POST, responderAtualizarScanWifi);
+  servidor.on("/api/scan/status", HTTP_GET, responderStatusScanWifi);
+  servidor.on("/api/config", HTTP_GET, responderConfigJson);
+  servidor.on("/api/config", HTTP_POST, responderSalvarConfig);
+  servidor.on("/api/config/apagar", HTTP_POST, responderApagarConfig);
+  servidor.on("/api/reiniciar", HTTP_GET, responderReiniciar);
+  servidor.on("/api/reiniciar", HTTP_POST, responderReiniciar);
+
   servidor.begin();
+
+  if (handleTaskScanWifi == NULL) {
+    xTaskCreatePinnedToCore(
+      tarefaScanWifi,
+      "tarefa_scan_wifi",
+      4096,
+      NULL,
+      1,
+      &handleTaskScanWifi,
+      0
+    );
+  }
 
   apiIniciada = true;
 
-  Serial.println("API Professor iniciada em modo STA.");
-  Serial.print("Wi-Fi conectado em: ");
-  Serial.println(WIFI_SSID);
+  Serial.println("API Professor iniciada.");
+  Serial.print("Modo Wi-Fi: ");
+  Serial.println(modoWifiTexto());
   Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
+  Serial.println(ipAtualTexto());
   Serial.println("Wi-Fi sleep: OFF");
   Serial.println("Potencia Wi-Fi: 8.5 dBm");
 
