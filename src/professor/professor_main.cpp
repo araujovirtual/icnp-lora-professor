@@ -5,16 +5,34 @@
 #include "display_oled.h"
 #include "bateria.h"
 #include "led_sync.h"
+#include "api_professor.h"
+
+// ============================================================
+// CONFIGURACAO DA API
+// ============================================================
+// 1 = API ligada em Wi-Fi STA.
+// 0 = API desligada.
+// ============================================================
+
+#define API_PROFESSOR_ATIVA 1
+
+// ============================================================
+// CONFIGURACAO ICNP
+// ============================================================
 
 const unsigned long intervaloBeaconMs = 2000;
 const unsigned long tempoEsperaDataMs = 1200;
 
-const String alunos[] = {"1","2"};
+const String alunos[] = {"1", "2"};
 const int totalAlunos = 2;
 
 unsigned long ultimoBeacon = 0;
 unsigned long cicloAtual = 0;
 int indiceAlunoAtual = 0;
+
+// ============================================================
+// ESTADO LOCAL DOS ALUNOS NO PROFESSOR
+// ============================================================
 
 struct EstadoAluno {
   String id;
@@ -34,6 +52,10 @@ struct EstadoAluno {
 };
 
 EstadoAluno estadoAlunos[totalAlunos];
+
+// ============================================================
+// FUNCOES AUXILIARES
+// ============================================================
 
 void inicializarEstadoAlunos() {
   for (int i = 0; i < totalAlunos; i++) {
@@ -233,31 +255,45 @@ bool camposObrigatoriosPresentes(
   );
 }
 
+// ============================================================
+// SETUP
+// ============================================================
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
   Serial.println();
   Serial.println("================================");
-  Serial.println("PROFESSOR - ICNP COM PPG REAL");
+  Serial.println("PROFESSOR - ICNP COM PPG REAL + API WIFI STA");
   Serial.println("Placa: Heltec WiFi LoRa 32 V2");
   Serial.println("Fluxo: BEACON(ALVO) -> DATA(FC/SPO2/IR/RED/DEDO/QUAL/BAT) -> ACK");
-  Serial.println("Aluno configurado: 1");
-  Serial.println("Estrutura preparada para API futura com estado em memoria");
+  Serial.println("API no Professor via Wi-Fi STA");
   Serial.println("================================");
 
   inicializarEstadoAlunos();
 
-  iniciarRadioLoRa();
   iniciarDisplayOled();
   iniciarMonitorBateria();
   iniciarLedSync();
+
+#if API_PROFESSOR_ATIVA
+  iniciarApiProfessor();
+#else
+  Serial.println("API Professor: DESLIGADA");
+#endif
+
+  iniciarRadioLoRa();
 
   mostrarTelaProfessor(0, "-", "AGUARDANDO", 0, textoEnergia());
 
   Serial.println("Formato CSV:");
   Serial.println("CSV;CICLO=<n>;ALVO=<id>;ALUNO=<id>;SEQ=<seq>;FC=<fc|NA>;SPO2=<spo2|NA>;IR=<ir>;RED=<red>;DEDO=<0|1>;QUAL=<OK|RUIM|NA>;RSSI=<dBm>;SNR=<dB>;BAT_ALUNO=<V|NA>;ENERGIA_PROF=<V|NA>;ACK=<0|1>");
 }
+
+// ============================================================
+// LOOP PRINCIPAL ICNP / LORA
+// ============================================================
 
 void loop() {
   atualizarLedSync();
@@ -303,7 +339,9 @@ void loop() {
 
     Serial.println("Timeout: nenhum DATA recebido do aluno alvo.");
     registrarCsvTimeout(cicloAtual, alvo, energiaProfessor);
+
     mostrarTelaProfessor(cicloAtual, alvo, "TIMEOUT", 0, energiaProfessor);
+
     Serial.println("======================");
     return;
   }
@@ -322,7 +360,9 @@ void loop() {
 
     Serial.println("Pacote invalido: nao e DATA ICNP.");
     registrarCsvPacoteInvalido(cicloAtual, alvo, pacote.rssi, pacote.snr, energiaProfessor);
+
     mostrarTelaProfessor(cicloAtual, alvo, "INVALIDO", pacote.rssi, energiaProfessor);
+
     Serial.println("======================");
     return;
   }
@@ -354,7 +394,9 @@ void loop() {
 
     Serial.println("Pacote invalido: campos obrigatorios ausentes.");
     registrarCsvPacoteInvalido(cicloAtual, alvo, pacote.rssi, pacote.snr, energiaProfessor);
+
     mostrarTelaProfessor(cicloAtual, alvo, "INVALIDO", pacote.rssi, energiaProfessor);
+
     Serial.println("======================");
     return;
   }
@@ -364,7 +406,9 @@ void loop() {
 
     Serial.println("Pacote ignorado: DATA recebido de aluno diferente do ALVO.");
     registrarCsvPacoteInvalido(cicloAtual, alvo, pacote.rssi, pacote.snr, energiaProfessor);
+
     mostrarTelaProfessor(cicloAtual, alvo, "ALUNO INV", pacote.rssi, energiaProfessor);
+
     Serial.println("======================");
     return;
   }
@@ -382,7 +426,9 @@ void loop() {
 
     Serial.println("Pacote invalido: DATA pertence a outro ciclo.");
     registrarCsvPacoteInvalido(cicloAtual, alvo, pacote.rssi, pacote.snr, energiaProfessor);
+
     mostrarTelaProfessor(cicloAtual, alvo, "CICLO INV", pacote.rssi, energiaProfessor);
+
     Serial.println("======================");
     return;
   }
@@ -440,6 +486,25 @@ void loop() {
     batAluno,
     energiaProfessor
   );
+
+#if API_PROFESSOR_ATIVA
+  atualizarEstadoAlunoAPI(
+    aluno.toInt(),
+    (int)sequencia,
+    (int)cicloAtual,
+    frequenciaCardiaca > 0 ? frequenciaCardiaca : -1,
+    spo2 > 0 ? spo2 : -1,
+    ir,
+    red,
+    dedo ? 1 : 0,
+    qualidade,
+    pacote.rssi,
+    pacote.snr,
+    batAluno.toFloat(),
+    energiaProfessor.toFloat(),
+    1
+  );
+#endif
 
   mostrarTelaProfessor(cicloAtual, alvo, "OK A" + aluno, pacote.rssi, energiaProfessor);
 
