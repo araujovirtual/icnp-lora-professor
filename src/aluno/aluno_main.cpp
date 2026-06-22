@@ -12,6 +12,15 @@
 #define ID_ALUNO_CONFIG "2"
 #endif
 
+// 0 = apenas imprime PPG no Serial.
+// 1 = envia pacote ICNP TIPO=PPG após ACK válido.
+// Recomendo deixar 0 no primeiro teste.
+#define ENVIAR_PPG_DEBUG_LORA 1
+
+
+#define AMOSTRAS_PPG_API 32
+#define INTERVALO_MINIMO_PPG_MS 2000
+
 const String ID_ALUNO = ID_ALUNO_CONFIG;
 
 const unsigned long tempoEsperaAckMs = 2000;
@@ -21,6 +30,7 @@ const unsigned long intervaloStatusSensorMs = 2000;
 unsigned long contadorSeq = 0;
 unsigned long ultimoEnvioData = 0;
 unsigned long ultimoStatusSensor = 0;
+unsigned long ultimoEnvioPpg = 0;
 
 unsigned long ultimoCicloTela = 0;
 unsigned long ultimaSeqTela = 0;
@@ -129,6 +139,8 @@ void imprimirStatusSensor() {
     spo2
   );
 
+  String ppg = montarJanelaPpgNormalizadaApi(AMOSTRAS_PPG_API);
+
   Serial.print("STATUS_SENSOR;");
   Serial.print("ALUNO=");
   Serial.print(ID_ALUNO);
@@ -145,7 +157,65 @@ void imprimirStatusSensor() {
   Serial.print(";IR=");
   Serial.print(ir);
   Serial.print(";RED=");
-  Serial.println(red);
+  Serial.print(red);
+  Serial.print(";PPG=");
+  Serial.print(ppg.length() > 0 ? ppg : "NA");
+  Serial.println();
+}
+
+String montarPacotePpgDebug(unsigned long seq, unsigned long ciclo) {
+  String ppg = montarJanelaPpgNormalizadaApi(AMOSTRAS_PPG_API);
+
+  if (ppg.length() == 0) {
+    return "";
+  }
+
+  String pacote = "ICNP;TIPO=PPG;ALUNO=" + ID_ALUNO +
+                  ";SEQ=" + String(seq) +
+                  ";CICLO=" + String(ciclo) +
+                  ";N=" + String(AMOSTRAS_PPG_API) +
+                  ";PPG=" + ppg;
+
+  return pacote;
+}
+
+void tentarEnviarPpgDebug(unsigned long seq, unsigned long ciclo, bool dedo, const String &qualidade) {
+#if ENVIAR_PPG_DEBUG_LORA
+  if (!dedo) {
+    return;
+  }
+
+  if (qualidade != "OK") {
+    return;
+  }
+
+  unsigned long agora = millis();
+
+  if (agora - ultimoEnvioPpg < INTERVALO_MINIMO_PPG_MS) {
+    return;
+  }
+
+  ultimoEnvioPpg = agora;
+
+  String pacotePpg = montarPacotePpgDebug(seq, ciclo);
+
+  if (pacotePpg.length() == 0) {
+    Serial.println("PPG debug nao enviado: janela PPG insuficiente.");
+    return;
+  }
+
+  Serial.print("Enviando PPG debug: ");
+  Serial.println(pacotePpg);
+
+  delay(80);
+  enviarMensagemLoRa(pacotePpg);
+  pulsoLedSync(30);
+#else
+  (void)seq;
+  (void)ciclo;
+  (void)dedo;
+  (void)qualidade;
+#endif
 }
 
 void setup() {
@@ -160,6 +230,12 @@ void setup() {
   Serial.println("ID_ALUNO: " + ID_ALUNO);
   Serial.println("Fluxo: BEACON(ALVO) -> DATA(FC/SPO2/BAT/IR/RED/DEDO/QUAL) -> ACK");
   Serial.println("Base: fluxo ICNP valido anterior + sensor fisiologico em tasks");
+  Serial.println("Debug PPG API: buffer normalizado disponivel no STATUS_SENSOR");
+#if ENVIAR_PPG_DEBUG_LORA
+  Serial.println("Envio LoRa TIPO=PPG: ATIVADO");
+#else
+  Serial.println("Envio LoRa TIPO=PPG: DESATIVADO");
+#endif
   Serial.println("================================");
 
   iniciarRadioLoRa();
@@ -346,6 +422,10 @@ void loop() {
   Serial.print("Qualidade: ");
   Serial.println(qualidade);
 
+  String ppgSerial = montarJanelaPpgNormalizadaApi(AMOSTRAS_PPG_API);
+  Serial.print("PPG janela normalizada: ");
+  Serial.println(ppgSerial.length() > 0 ? ppgSerial : "NA");
+
   Serial.print("Enviando DATA: ");
   Serial.println(data);
 
@@ -385,6 +465,8 @@ void loop() {
 
     ultimoStatusTela = "OK";
     atualizarTelaAlunoAtual(ultimoStatusTela);
+
+    tentarEnviarPpgDebug(contadorSeq, ciclo, dedo, qualidade);
   } else {
     pulsoLedSync(300);
 

@@ -78,6 +78,7 @@ static const char PAGINA_HTML[] = R"ICNPHTML(
   .fc{color:#6ff26d}
   .spo2{color:#70d8ff}
   .bat{color:#ffd15c}
+  .ppg{color:#d6a3ff}
   canvas{display:block;width:100%;height:150px;background:#0b1119;border-radius:9px}
   .dados{display:grid;grid-template-columns:1fr}
   .grande{padding:13px;border-bottom:1px solid #27374c}
@@ -100,7 +101,7 @@ static const char PAGINA_HTML[] = R"ICNPHTML(
   .tv .head{height:40px;padding:7px 9px;flex-shrink:0}
   .tv .aluno{font-size:18px}
   .tv .body{display:grid;grid-template-columns:1fr;min-height:0;flex:1}
-  .tv .graficos{padding:6px;border-right:none;border-bottom:1px solid #27374c;display:grid;grid-template-rows:1fr 1fr;gap:6px;min-height:0}
+  .tv .graficos{padding:6px;border-right:none;border-bottom:1px solid #27374c;display:grid;grid-template-rows:1fr 1fr 0.8fr;gap:6px;min-height:0}
   .tv .graf{margin:0;padding:6px;min-height:0;display:flex;flex-direction:column}
   .tv .graf.bateria{display:none}
   .tv .linha{font-size:11px;margin-bottom:3px}
@@ -130,7 +131,7 @@ static const char PAGINA_HTML[] = R"ICNPHTML(
 <div class="top">
   <div>
     <div class="titulo">Professor ICNP - Monitoramento PPG</div>
-    <div class="sub">Graficos com esteira temporal continua: o tempo entra pela direita e sai pela esquerda.</div>
+    <div class="sub">Tendencias de FC e SpO2 e onda PPG do pulso recebidas pelo protocolo ICNP.</div>
   </div>
 
   <div>
@@ -146,7 +147,7 @@ static const char PAGINA_HTML[] = R"ICNPHTML(
 <div class="page">
   <div id="status"></div>
   <div id="monitores" class="monitores cols-2"></div>
-  <div class="rodape">Tendencias reais por ciclo ICNP. Nao ha ECG real nem forma de onda PPG continua.</div>
+  <div class="rodape">A onda PPG do pulso representa o sinal optico do sensor. FC e SpO2 sao tendencias calculadas, nao ECG nem validacao clinica.</div>
 </div>
 
 <script>
@@ -162,8 +163,31 @@ const INTERVALO_API_MS=1000;
 const INTERVALO_DESENHO_MS=120;
 
 function H(id){
-  if(!hist[id]) hist[id]={ultimoRegistroTs:0,p:[],max:240};
+  if(!hist[id]){
+    hist[id]={
+      ultimoRegistroTs:0,
+      p:[],
+      max:240,
+      ppgFonte:[],
+      ppgEsteira:[],
+      ppgHash:'',
+      ppgCursor:0,
+      ppgUltimoPasso:0,
+      ppgMax:160,
+      ppgSemContato:true
+    };
+  }
   return hist[id];
+}
+
+function limparEsteiraPpg(id){
+  let h=H(id);
+  h.ppgFonte=[];
+  h.ppgEsteira=[];
+  h.ppgHash='';
+  h.ppgCursor=0;
+  h.ppgUltimoPasso=0;
+  h.ppgSemContato=true;
 }
 
 function t(v,s=''){
@@ -198,6 +222,10 @@ function okSpo2(a){
 
 function okBat(a){
   return a && a.bat_aluno!==null && a.bat_aluno!==undefined && Number(a.bat_aluno)>0;
+}
+
+function temPpg(a){
+  return a && Array.isArray(a.ppg) && a.ppg.length>=2;
 }
 
 function badge(q){
@@ -277,6 +305,28 @@ function addHist(a){
   }
 }
 
+function atualizarFilaPpg(a){
+  if(!a) return;
+
+  let h=H(a.aluno);
+  let ppgValido = okBase(a) && Array.isArray(a.ppg) && a.ppg.length>=2;
+  let ppgRecente = a.ppg_idade_ms===null || a.ppg_idade_ms===undefined || Number(a.ppg_idade_ms)<=4500;
+
+  if(!ppgValido || !ppgRecente){
+    limparEsteiraPpg(a.aluno);
+    return;
+  }
+
+  let hash=a.ppg.join(',');
+
+  if(hash!==h.ppgHash){
+    h.ppgHash=hash;
+    h.ppgFonte=a.ppg.slice();
+    h.ppgCursor=0;
+    h.ppgSemContato=false;
+  }
+}
+
 function setCols(n){
   cols=n;
   localStorage.setItem('icnp_cols',String(n));
@@ -319,6 +369,8 @@ function card(a){
   let corFcGrande=okFc(a)?corFCValor(a.fc):'#718096';
   let corSpGrande=okSpo2(a)?corSpO2Valor(a.spo2):'#718096';
   let corBatGrande=okBat(a)?corBatValor(a.bat_aluno):'#718096';
+  let ppgTxt=(okBase(a) && temPpg(a))?(a.ppg.length+' pts'):'sem contato';
+  let ppgIdade=(a.ppg_idade_ms!==null && a.ppg_idade_ms!==undefined)?a.ppg_idade_ms+' ms':'NA';
 
   return ''+
   '<div class="card">'+
@@ -332,7 +384,7 @@ function card(a){
 
         '<div class="graf">'+
           '<div class="linha">'+
-            '<span class="fc">FC: tempo x bpm</span>'+
+            '<span class="fc">Tendencia da FC</span>'+
             '<span style="color:'+corFcGrande+'">'+(okFc(a)?a.fc+' bpm':'sem FC valida')+'</span>'+
           '</div>'+
           '<canvas id="fc'+id+'"></canvas>'+
@@ -340,10 +392,18 @@ function card(a){
 
         '<div class="graf">'+
           '<div class="linha">'+
-            '<span class="spo2">SpO2: tempo x %</span>'+
+            '<span class="spo2">Tendencia da SpO2</span>'+
             '<span style="color:'+corSpGrande+'">'+(okSpo2(a)?a.spo2+' %':'sem SpO2 valida')+'</span>'+
           '</div>'+
           '<canvas id="sp'+id+'"></canvas>'+
+        '</div>'+
+
+        '<div class="graf ppg">'+
+          '<div class="linha">'+
+            '<span class="ppg">Onda PPG do pulso</span>'+
+            '<span>'+ppgTxt+'</span>'+
+          '</div>'+
+          '<canvas id="ppg'+id+'"></canvas>'+
         '</div>'+
 
         '<div class="graf bateria">'+
@@ -377,7 +437,7 @@ function card(a){
           '<div class="box"><div class="k">Bat Aluno</div><div class="v" style="color:'+corBatGrande+'">'+t(a.bat_aluno,' V')+'</div></div>'+
           '<div class="box"><div class="k">Energia Prof</div><div class="v">'+t(a.energia_professor,' V')+'</div></div>'+
           '<div class="box"><div class="k">RSSI/SNR</div><div class="v">'+t(a.rssi)+'/'+t(a.snr)+'</div></div>'+
-          '<div class="box"><div class="k">Idade</div><div class="v">'+t(a.idade_ms,' ms')+'</div></div>'+
+          '<div class="box"><div class="k">PPG idade</div><div class="v">'+ppgIdade+'</div></div>'+
         '</div>'+
 
       '</div>'+
@@ -448,6 +508,22 @@ function sem(id,msg){
   x.fillText(msg,w/2,h/2);
 }
 
+function semPpg(id,msg){
+  let o=prep(id);
+  if(!o) return;
+
+  let x=o.x,w=o.w,h=o.h;
+
+  x.clearRect(0,0,w,h);
+  grade(x,w,h,20,10,10,20);
+
+  x.fillStyle='#718096';
+  x.font='bold 13px Arial';
+  x.textAlign='center';
+  x.textBaseline='middle';
+  x.fillText(msg,w/2,h/2);
+}
+
 function ultVisivel(p,campo,t0,t1){
   for(let i=p.length-1;i>=0;i--){
     if(!p[i].ts) continue;
@@ -506,7 +582,7 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
   if(!o) return;
 
   let x=o.x,w=o.w,h=o.h;
-  let L=44,T=12,R=12,B=38;
+  let L=44,T=12,R=12,B=34;
   let PW=w-L-R;
   let PH=h-T-B;
 
@@ -515,12 +591,7 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
   let t0=agora-JANELA_MS;
 
   let valid=p.filter(q=>{
-    return q &&
-           q.ts &&
-           q.ts>=t0 &&
-           q.ts<=t1 &&
-           q[campo]!==null &&
-           q[campo]!==undefined;
+    return q && q.ts && q.ts>=t0 && q.ts<=t1 && q[campo]!==null && q[campo]!==undefined;
   });
 
   if(valid.length<2){
@@ -529,11 +600,21 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
   }
 
   x.clearRect(0,0,w,h);
-  grade(x,w,h,L,T,R,B);
 
-  // ==========================================================
-  // EIXO Y
-  // ==========================================================
+  // Faixas visuais discretas. Sao referencias operacionais, nao clinicas.
+  if(campo==='fc'){
+    pintarFaixaY(x,L,T,PW,PH,minY,maxY,40,50,'rgba(255,211,90,0.10)');
+    pintarFaixaY(x,L,T,PW,PH,minY,maxY,50,120,'rgba(111,242,109,0.07)');
+    pintarFaixaY(x,L,T,PW,PH,minY,maxY,120,160,'rgba(255,211,90,0.10)');
+    pintarFaixaY(x,L,T,PW,PH,minY,maxY,160,180,'rgba(255,92,112,0.09)');
+  }
+
+  if(campo==='spo2'){
+    pintarFaixaY(x,L,T,PW,PH,minY,maxY,95,100,'rgba(111,242,109,0.08)');
+    pintarFaixaY(x,L,T,PW,PH,minY,maxY,90,95,'rgba(255,211,90,0.09)');
+  }
+
+  grade(x,w,h,L,T,R,B);
 
   x.fillStyle='#9daec5';
   x.font='10px Arial';
@@ -543,7 +624,7 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
   for(let i=0;i<=4;i++){
     let val=maxY-(maxY-minY)*i/4;
     let y=T+PH*i/4;
-    x.fillText(String(Math.round(val*10)/10),L-6,y);
+    x.fillText(String(Math.round(val)),L-6,y);
   }
 
   x.save();
@@ -553,35 +634,12 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
   x.fillText(un,0,0);
   x.restore();
 
-  // ==========================================================
-  // ESTEIRA DO TEMPO NO EIXO X
-  // ==========================================================
-
   let primeiroTick=Math.floor(t0/PASSO_TEMPO_MS)*PASSO_TEMPO_MS;
   let ultimoTick=t1+PASSO_TEMPO_MS;
 
-  for(let tick=primeiroTick;tick<=ultimoTick;tick+=PASSO_TEMPO_MS){
-    let xx=L+((tick-t0)/(t1-t0))*PW;
-
-    if(xx>=L && xx<=L+PW){
-      x.strokeStyle='rgba(255,255,255,0.13)';
-      x.lineWidth=1;
-      x.beginPath();
-      x.moveTo(xx,T);
-      x.lineTo(xx,T+PH);
-      x.stroke();
-
-      x.strokeStyle='#9daec5';
-      x.beginPath();
-      x.moveTo(xx,T+PH);
-      x.lineTo(xx,T+PH+4);
-      x.stroke();
-    }
-  }
-
   x.save();
   x.beginPath();
-  x.rect(L, T+PH+4, PW, B-2);
+  x.rect(L, T+PH+3, PW, B-2);
   x.clip();
 
   x.fillStyle='#9daec5';
@@ -593,26 +651,37 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
     let xx=L+((tick-t0)/(t1-t0))*PW;
 
     if(xx>=L-45 && xx<=L+PW+45){
-      x.fillText(horaDeTimestamp(tick),xx,T+PH+10);
+      x.strokeStyle='rgba(255,255,255,0.10)';
+      x.lineWidth=1;
+      x.beginPath();
+      x.moveTo(xx,T);
+      x.lineTo(xx,T+PH);
+      x.stroke();
+
+      x.fillText(horaDeTimestamp(tick),xx,T+PH+9);
     }
   }
 
   x.restore();
 
-  x.strokeStyle='rgba(255,255,255,0.28)';
+  x.strokeStyle='rgba(255,255,255,0.30)';
   x.lineWidth=1;
   x.beginPath();
   x.moveTo(L+PW,T);
   x.lineTo(L+PW,T+PH);
   x.stroke();
 
-  // ==========================================================
-  // LINHA DO GRAFICO COLORIDA POR FAIXA OPERACIONAL
-  // ==========================================================
+  x.save();
+  x.beginPath();
+  x.rect(L,T,PW,PH);
+  x.clip();
 
-  x.lineWidth=2;
+  x.lineWidth=3;
+  x.lineCap='round';
+  x.lineJoin='round';
 
   let anterior=null;
+  let ultimoPonto=null;
 
   for(let i=0;i<p.length;i++){
     let ponto=p[i];
@@ -637,32 +706,49 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
 
     if(anterior!==null){
       x.strokeStyle=corAtual;
+      x.shadowColor=corAtual;
+      x.shadowBlur=6;
       x.beginPath();
       x.moveTo(anterior.x,anterior.y);
       x.lineTo(xx,yy);
       x.stroke();
+      x.shadowBlur=0;
     }
 
     x.fillStyle=corAtual;
     x.beginPath();
-    x.arc(xx,yy,2.6,0,Math.PI*2);
+    x.arc(xx,yy,3.5,0,Math.PI*2);
     x.fill();
 
     anterior={x:xx,y:yy};
+    ultimoPonto={x:xx,y:yy,v:vOriginal,cor:corAtual};
   }
 
-  // ==========================================================
-  // ROTULOS DE VALOR A CADA 5 s
-  // ==========================================================
+  // Marcador vivo do ultimo valor, estilo monitor, sem inventar onda.
+  if(ultimoPonto){
+    let pulso=1.0+0.35*Math.sin(Date.now()/180);
+    x.strokeStyle=ultimoPonto.cor;
+    x.fillStyle=ultimoPonto.cor;
+    x.lineWidth=2;
+    x.beginPath();
+    x.arc(ultimoPonto.x,ultimoPonto.y,6*pulso,0,Math.PI*2);
+    x.stroke();
+    x.beginPath();
+    x.arc(ultimoPonto.x,ultimoPonto.y,3.5,0,Math.PI*2);
+    x.fill();
+  }
 
+  x.restore();
+
+  // Marcadores discretos a cada 5 segundos para FC e SpO2.
+  // Mostram valores reais recebidos mais proximos de cada tick, sem criar onda artificial.
   let ocupados=[];
-
-  ocupados.push({x:w-145,y:0,w:145,h:26});
+  ocupados.push({x:w-155,y:0,w:155,h:25});
 
   for(let tick=primeiroTick;tick<=ultimoTick;tick+=PASSO_TEMPO_MS){
     let tickX=L+((tick-t0)/(t1-t0))*PW;
 
-    if(tickX<L+36 || tickX>L+PW-36) continue;
+    if(tickX<L+34 || tickX>L+PW-34) continue;
 
     let melhor=null;
     let menorDif=999999;
@@ -688,17 +774,40 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
 
     let valorOriginal=Number(melhor[campo]);
     let vv=Math.max(minY,Math.min(maxY,valorOriginal));
+    let pontoX=L+((melhor.ts-t0)/(t1-t0))*PW;
     let pontoY=T+PH-((vv-minY)/(maxY-minY))*PH;
     let textoValor=String(valorOriginal);
+    let corMarcador=corPorCampo(campo,valorOriginal,corPadrao);
+
+    x.save();
+    x.beginPath();
+    x.rect(L,T,PW,PH);
+    x.clip();
+
+    x.strokeStyle='rgba(255,255,255,0.16)';
+    x.lineWidth=1;
+    x.setLineDash([3,4]);
+    x.beginPath();
+    x.moveTo(tickX,T);
+    x.lineTo(tickX,T+PH);
+    x.stroke();
+    x.setLineDash([]);
+
+    x.fillStyle=corMarcador;
+    x.beginPath();
+    x.arc(pontoX,pontoY,4.2,0,Math.PI*2);
+    x.fill();
+
+    x.restore();
 
     let candidatos=[
-      {x:tickX,    y:pontoY-8},
-      {x:tickX,    y:pontoY-20},
-      {x:tickX-24, y:pontoY-8},
-      {x:tickX+24, y:pontoY-8},
-      {x:tickX,    y:pontoY+20},
-      {x:tickX-30, y:pontoY+20},
-      {x:tickX+30, y:pontoY+20}
+      {x:pontoX,    y:pontoY-10},
+      {x:pontoX,    y:pontoY-24},
+      {x:pontoX-28, y:pontoY-10},
+      {x:pontoX+28, y:pontoY-10},
+      {x:pontoX,    y:pontoY+22},
+      {x:pontoX-32, y:pontoY+22},
+      {x:pontoX+32, y:pontoY+22}
     ];
 
     let escolhido=null;
@@ -707,7 +816,7 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
     for(let c=0;c<candidatos.length;c++){
       let cand=candidatos[c];
 
-      if(cand.y>T+PH-20) cand.y=T+PH-22;
+      if(cand.y>T+PH-16) cand.y=T+PH-18;
       if(cand.y<T+16) cand.y=T+18;
 
       let rect=textoRetanguloEstimado(textoValor,cand.x,cand.y);
@@ -720,37 +829,174 @@ function graf(id,p,campo,corPadrao,minY,maxY,un,msg){
     }
 
     if(escolhido && escolhidoRect){
-      x.fillStyle='rgba(11,17,25,0.82)';
-      x.fillRect(escolhidoRect.x-2,escolhidoRect.y-1,escolhidoRect.w+4,escolhidoRect.h+2);
+      x.fillStyle='rgba(8,12,18,0.82)';
+      x.fillRect(escolhidoRect.x-3,escolhidoRect.y-2,escolhidoRect.w+6,escolhidoRect.h+4);
 
-      x.fillStyle=corPorCampo(campo,valorOriginal,corPadrao);
+      x.fillStyle=corMarcador;
       x.font='bold 10px Arial';
       x.textAlign='center';
       x.textBaseline='bottom';
       x.fillText(textoValor,escolhido.x,escolhido.y);
 
       ocupados.push({
-        x:escolhidoRect.x-4,
-        y:escolhidoRect.y-3,
-        w:escolhidoRect.w+8,
-        h:escolhidoRect.h+6
+        x:escolhidoRect.x-5,
+        y:escolhidoRect.y-4,
+        w:escolhidoRect.w+10,
+        h:escolhidoRect.h+8
       });
     }
   }
-
-  // ==========================================================
-  // ULTIMO VALOR
-  // ==========================================================
 
   let u=ultVisivel(p,campo,t0,t1);
 
   if(u!==null){
     x.fillStyle=corPorCampo(campo,u,corPadrao);
-    x.font='11px Arial';
+    x.font='bold 12px Arial';
     x.textAlign='right';
     x.textBaseline='top';
-    x.fillText('Ultimo: '+u+' '+un,w-8,5);
+    x.fillText('Atual: '+u+' '+un,w-8,5);
   }
+}
+
+function pintarFaixaY(x,L,T,PW,PH,minY,maxY,inicio,fim,cor){
+  let a=Math.max(minY,Math.min(maxY,inicio));
+  let b=Math.max(minY,Math.min(maxY,fim));
+  if(b<=minY || a>=maxY || b<=a) return;
+
+  let y1=T+PH-((b-minY)/(maxY-minY))*PH;
+  let y2=T+PH-((a-minY)/(maxY-minY))*PH;
+
+  x.fillStyle=cor;
+  x.fillRect(L,y1,PW,y2-y1);
+}
+
+function desenharPpg(id,dados,idadeMs){
+  let o=prep(id);
+  if(!o) return;
+
+  let x=o.x,w=o.w,h=o.h;
+  let L=20,T=10,R=10,B=20;
+  let PW=w-L-R;
+  let PH=h-T-B;
+
+  let alunoId=String(id).replace('ppg','');
+  let hst=H(alunoId);
+
+  let ppgRecente = idadeMs===null || idadeMs===undefined || Number(idadeMs)<=4500;
+
+  if(hst.ppgSemContato || !ppgRecente || !hst.ppgFonte || hst.ppgFonte.length<2){
+    semPpg(id,'sem contato optico');
+    return;
+  }
+
+  let agora=Date.now();
+
+  if(hst.ppgUltimoPasso===0){
+    hst.ppgUltimoPasso=agora;
+  }
+
+  // Playback local da janela PPG: efeito esteira sem aumentar trafego LoRa.
+  let intervaloAmostraMs=55;
+  let passos=Math.floor((agora-hst.ppgUltimoPasso)/intervaloAmostraMs);
+
+  if(passos>0){
+    hst.ppgUltimoPasso+=passos*intervaloAmostraMs;
+
+    for(let k=0;k<passos;k++){
+      let v=Number(hst.ppgFonte[hst.ppgCursor]);
+
+      if(isNaN(v)) v=0;
+      if(v<0) v=0;
+      if(v>255) v=255;
+
+      hst.ppgEsteira.push(v);
+
+      if(hst.ppgEsteira.length>hst.ppgMax){
+        hst.ppgEsteira.shift();
+      }
+
+      hst.ppgCursor++;
+
+      if(hst.ppgCursor>=hst.ppgFonte.length){
+        hst.ppgCursor=0;
+      }
+    }
+  }
+
+  if(hst.ppgEsteira.length<2){
+    semPpg(id,'aguardando onda PPG');
+    return;
+  }
+
+  x.clearRect(0,0,w,h);
+  grade(x,w,h,L,T,R,B);
+
+  x.fillStyle='#9daec5';
+  x.font='10px Arial';
+  x.textAlign='right';
+  x.textBaseline='middle';
+  x.fillText('alto',L-4,T+5);
+  x.fillText('baixo',L-4,T+PH-5);
+
+  x.save();
+  x.beginPath();
+  x.rect(L,T,PW,PH);
+  x.clip();
+
+  x.strokeStyle='#d6a3ff';
+  x.shadowColor='#d6a3ff';
+  x.shadowBlur=7;
+  x.lineWidth=2.5;
+  x.lineCap='round';
+  x.lineJoin='round';
+  x.beginPath();
+
+  let dadosTela=hst.ppgEsteira;
+
+  for(let i=0;i<dadosTela.length;i++){
+    let v=Number(dadosTela[i]);
+
+    if(isNaN(v)) v=0;
+    if(v<0) v=0;
+    if(v>255) v=255;
+
+    let xx=L+(i/(hst.ppgMax-1))*PW;
+    let yy=T+PH-(v/255)*PH;
+
+    if(i===0) x.moveTo(xx,yy);
+    else x.lineTo(xx,yy);
+  }
+
+  x.stroke();
+  x.shadowBlur=0;
+
+  let ultimo=dadosTela[dadosTela.length-1];
+  let yUlt=T+PH-(ultimo/255)*PH;
+  let pulso=1.0+0.35*Math.sin(Date.now()/150);
+
+  x.fillStyle='#d6a3ff';
+  x.strokeStyle='#d6a3ff';
+  x.lineWidth=2;
+  x.beginPath();
+  x.arc(L+PW,yUlt,6*pulso,0,Math.PI*2);
+  x.stroke();
+  x.beginPath();
+  x.arc(L+PW,yUlt,3,0,Math.PI*2);
+  x.fill();
+
+  x.restore();
+
+  x.fillStyle='#9daec5';
+  x.font='10px Arial';
+  x.textAlign='right';
+  x.textBaseline='top';
+
+  let txt='onda PPG ativa';
+  if(idadeMs!==null && idadeMs!==undefined){
+    txt+=' | '+idadeMs+' ms';
+  }
+
+  x.fillText(txt,w-8,5);
 }
 
 function drawAll(){
@@ -759,9 +1005,10 @@ function drawAll(){
   estado.alunos.forEach(a=>{
     let p=H(a.aluno).p;
 
-    graf('fc'+a.aluno,p,'fc','#6ff26d',40,180,'bpm','sem historico de FC valido');
-    graf('sp'+a.aluno,p,'spo2','#70d8ff',80,100,'%','sem historico de SpO2 valido');
+    graf('fc'+a.aluno,p,'fc','#6ff26d',40,180,'bpm','sem tendencia de FC valida');
+    graf('sp'+a.aluno,p,'spo2','#70d8ff',80,100,'%','sem tendencia de SpO2 valida');
     graf('bt'+a.aluno,p,'bat','#ffd15c',3.0,4.2,'V','sem historico de bateria');
+    desenharPpg('ppg'+a.aluno,a.ppg,a.ppg_idade_ms);
   });
 }
 
@@ -787,7 +1034,10 @@ async function atualizar(){
 
     renderStatus(d);
 
-    d.alunos.forEach(addHist);
+    d.alunos.forEach(a=>{
+      addHist(a);
+      atualizarFilaPpg(a);
+    });
 
     document.getElementById('monitores').innerHTML=d.alunos.map(card).join('');
 
@@ -911,6 +1161,20 @@ static void campoTexto(String& json, bool& primeiro, const char* nome, const Str
   json += aspas(valor);
 }
 
+static void campoPpgArray(String& json, bool& primeiro, const String& ppg) {
+  separador(json, primeiro);
+  json += aspas("ppg");
+  json += ':';
+
+  if (ppg.length() > 0) {
+    json += '[';
+    json += ppg;
+    json += ']';
+  } else {
+    json += "[]";
+  }
+}
+
 // ============================================================
 // CACHE / MUTEX DA VARREDURA WI-FI
 // ============================================================
@@ -1023,6 +1287,9 @@ static void limparEstadoAluno(int i) {
   estadoAlunos[i].spo2 = -1;
   estadoAlunos[i].ir = -1;
   estadoAlunos[i].red = -1;
+  estadoAlunos[i].ppg = "";
+  estadoAlunos[i].ppgN = 0;
+  estadoAlunos[i].ppgMs = 0;
   estadoAlunos[i].dedo = -1;
   estadoAlunos[i].qual = "NA";
   estadoAlunos[i].rssi = 0;
@@ -1058,6 +1325,25 @@ static String jsonAluno(const EstadoAlunoAPI& e) {
   campoIntNA(json, primeiro, "spo2", e.spo2);
   campoLongNA(json, primeiro, "ir", e.ir);
   campoLongNA(json, primeiro, "red", e.red);
+
+  campoPpgArray(json, primeiro, e.ppg);
+  campoInt(json, primeiro, "ppg_n", e.ppgN);
+
+  if (e.ppgMs > 0) {
+    campoULong(json, primeiro, "ppg_idade_ms", millis() - e.ppgMs);
+    campoULong(json, primeiro, "ppg_tempo_ms", e.ppgMs);
+  } else {
+    separador(json, primeiro);
+    json += aspas("ppg_idade_ms");
+    json += ':';
+    json += "null";
+
+    separador(json, primeiro);
+    json += aspas("ppg_tempo_ms");
+    json += ':';
+    json += "null";
+  }
+
   campoIntNA(json, primeiro, "dedo", e.dedo);
   campoTexto(json, primeiro, "qual", e.qual);
   campoInt(json, primeiro, "rssi", e.rssi);
@@ -1778,6 +2064,30 @@ void atualizarEstadoAlunoAPI(
     estadoAlunos[aluno].energiaProfessor = energiaProfessor;
     estadoAlunos[aluno].ack = ack;
     estadoAlunos[aluno].ultimoMs = millis();
+
+    xSemaphoreGive(mutexEstado);
+  }
+}
+
+void atualizarPpgAlunoAPI(
+  int aluno,
+  const String& ppg,
+  int ppgN
+) {
+  if (aluno < 1 || aluno > 2) {
+    return;
+  }
+
+  garantirMutexEstado();
+
+  if (xSemaphoreTake(mutexEstado, pdMS_TO_TICKS(20)) == pdTRUE) {
+    EstadoAlunoAPI &e = estadoAlunos[aluno];
+
+    e.ativo = true;
+    e.aluno = aluno;
+    e.ppg = ppg;
+    e.ppgN = ppgN;
+    e.ppgMs = millis();
 
     xSemaphoreGive(mutexEstado);
   }

@@ -16,6 +16,10 @@ struct EstadoAlunoAPI {
   long ir = -1;
   long red = -1;
 
+  String ppg = "";
+  int ppgN = 0;
+  unsigned long ppgMs = 0;
+
   int dedo = -1;
   String qual = "NA";
 
@@ -47,6 +51,12 @@ void atualizarEstadoAlunoAPI(
   float batAluno,
   float energiaProfessor,
   int ack
+);
+
+void atualizarPpgAlunoAPI(
+  int aluno,
+  const String& ppg,
+  int ppgN
 );
 
 #endif

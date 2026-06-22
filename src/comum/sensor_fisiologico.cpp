@@ -9,13 +9,19 @@
 #define I2C_SCL 15
 #define ENDERECO_MAX3010X 0x57
 
-#define LIMIAR_DEDO_IR 30000L
+// Ajustado com base nos testes reais.
+// Sem dedo: centenas a poucos milhares.
+// Com dedo: ~22000 a 24000.
+#define LIMIAR_DEDO_IR 10000L
+
 #define RATE_SIZE 8
 
 #define FC_MIN_ACEITA 40
 #define FC_MAX_ACEITA 130
 
 #define BUFFER_SPO2 100
+#define BUFFER_PPG_API 64
+
 #define SPO2_MIN_ACEITA 85
 #define SPO2_MAX_ACEITA 100
 
@@ -57,6 +63,10 @@ static uint32_t bufferRedSpo2[BUFFER_SPO2];
 
 static int indiceAmostraSpo2 = 0;
 static int totalAmostrasSpo2 = 0;
+
+static uint32_t bufferPpgApi[BUFFER_PPG_API];
+static int indicePpgApi = 0;
+static int totalPpgApi = 0;
 
 static byte rates[RATE_SIZE];
 static byte rateSpot = 0;
@@ -108,7 +118,24 @@ static void limparBufferSpo2Compartilhado() {
   }
 }
 
+static void limparBufferPpgApiCompartilhado() {
+  indicePpgApi = 0;
+  totalPpgApi = 0;
+
+  for (int i = 0; i < BUFFER_PPG_API; i++) {
+    bufferPpgApi[i] = 0;
+  }
+}
+
 static void adicionarAmostraNoBufferSpo2(long ir, long red) {
+  if (ir < 0) {
+    ir = 0;
+  }
+
+  if (red < 0) {
+    red = 0;
+  }
+
   bufferIrSpo2[indiceAmostraSpo2] = (uint32_t)ir;
   bufferRedSpo2[indiceAmostraSpo2] = (uint32_t)red;
 
@@ -120,6 +147,24 @@ static void adicionarAmostraNoBufferSpo2(long ir, long red) {
 
   if (totalAmostrasSpo2 < BUFFER_SPO2) {
     totalAmostrasSpo2++;
+  }
+}
+
+static void adicionarAmostraNoBufferPpgApi(long ir) {
+  if (ir < 0) {
+    ir = 0;
+  }
+
+  bufferPpgApi[indicePpgApi] = (uint32_t)ir;
+
+  indicePpgApi++;
+
+  if (indicePpgApi >= BUFFER_PPG_API) {
+    indicePpgApi = 0;
+  }
+
+  if (totalPpgApi < BUFFER_PPG_API) {
+    totalPpgApi++;
   }
 }
 
@@ -278,16 +323,20 @@ static void taskFcTempoReal(void *parametro) {
     bool sinal = ir > LIMIAR_DEDO_IR;
 
     portENTER_CRITICAL(&muxDadosSensor);
+
     irAtual = ir;
     redAtual = red;
     sinalPresente = sinal;
 
     if (sinal) {
+      adicionarAmostraNoBufferPpgApi(ir);
       adicionarAmostraNoBufferSpo2(ir, red);
     } else {
+      limparBufferPpgApiCompartilhado();
       limparBufferSpo2Compartilhado();
       limparSpo2Compartilhado();
     }
+
     portEXIT_CRITICAL(&muxDadosSensor);
 
     processarFcTempoReal(ir);
@@ -306,6 +355,7 @@ static void taskSpo2(void *parametro) {
     int totalLocal = 0;
 
     portENTER_CRITICAL(&muxDadosSensor);
+
     totalLocal = totalAmostrasSpo2;
 
     if (totalLocal >= BUFFER_SPO2) {
@@ -314,6 +364,7 @@ static void taskSpo2(void *parametro) {
         redLocal[i] = bufferRedSpo2[i];
       }
     }
+
     portEXIT_CRITICAL(&muxDadosSensor);
 
     if (totalLocal >= BUFFER_SPO2) {
@@ -349,6 +400,7 @@ void iniciarSensorFisiologico() {
   limparBpmInterno();
   limparSpo2Compartilhado();
   limparBufferSpo2Compartilhado();
+  limparBufferPpgApiCompartilhado();
   portEXIT_CRITICAL(&muxDadosSensor);
 
   Serial.println("Sensor fisiologico iniciado.");
@@ -520,4 +572,87 @@ float lerAcRedSensorFisiologico() {
   portEXIT_CRITICAL(&muxDadosSensor);
 
   return valor;
+}
+
+String montarJanelaPpgNormalizadaApi(int quantidade) {
+  if (quantidade <= 0) {
+    quantidade = 32;
+  }
+
+  if (quantidade > BUFFER_PPG_API) {
+    quantidade = BUFFER_PPG_API;
+  }
+
+  uint32_t local[BUFFER_PPG_API];
+  int totalLocal = 0;
+  int indiceLocal = 0;
+
+  portENTER_CRITICAL(&muxDadosSensor);
+
+  totalLocal = totalPpgApi;
+  indiceLocal = indicePpgApi;
+
+  if (totalLocal >= quantidade) {
+    int inicio = indiceLocal - quantidade;
+
+    if (inicio < 0) {
+      inicio += BUFFER_PPG_API;
+    }
+
+    for (int i = 0; i < quantidade; i++) {
+      int idx = (inicio + i) % BUFFER_PPG_API;
+      local[i] = bufferPpgApi[idx];
+    }
+  }
+
+  portEXIT_CRITICAL(&muxDadosSensor);
+
+  if (totalLocal < quantidade) {
+    return "";
+  }
+
+  uint32_t minVal = local[0];
+  uint32_t maxVal = local[0];
+
+  for (int i = 1; i < quantidade; i++) {
+    if (local[i] < minVal) {
+      minVal = local[i];
+    }
+
+    if (local[i] > maxVal) {
+      maxVal = local[i];
+    }
+  }
+
+  if (maxVal <= minVal) {
+    return "";
+  }
+
+  String saida = "";
+
+  for (int i = 0; i < quantidade; i++) {
+    long normalizado = map(
+      (long)local[i],
+      (long)minVal,
+      (long)maxVal,
+      20,
+      235
+    );
+
+    if (normalizado < 0) {
+      normalizado = 0;
+    }
+
+    if (normalizado > 255) {
+      normalizado = 255;
+    }
+
+    if (i > 0) {
+      saida += ",";
+    }
+
+    saida += String(normalizado);
+  }
+
+  return saida;
 }

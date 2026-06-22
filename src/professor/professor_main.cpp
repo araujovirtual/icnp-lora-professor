@@ -7,21 +7,11 @@
 #include "led_sync.h"
 #include "api_professor.h"
 
-// ============================================================
-// CONFIGURACAO DA API
-// ============================================================
-// 1 = API ligada em Wi-Fi STA.
-// 0 = API desligada.
-// ============================================================
-
 #define API_PROFESSOR_ATIVA 1
-
-// ============================================================
-// CONFIGURACAO ICNP
-// ============================================================
 
 const unsigned long intervaloBeaconMs = 2000;
 const unsigned long tempoEsperaDataMs = 1200;
+const unsigned long tempoEsperaPpgDebugMs = 900;
 
 const String alunos[] = {"1", "2"};
 const int totalAlunos = 2;
@@ -30,53 +20,57 @@ unsigned long ultimoBeacon = 0;
 unsigned long cicloAtual = 0;
 int indiceAlunoAtual = 0;
 
-// ============================================================
-// ESTADO LOCAL DOS ALUNOS NO PROFESSOR
-// ============================================================
-
-struct EstadoAluno {
+struct EstadoAlunoLocal {
   String id;
   bool atualizado;
   unsigned long ultimoCiclo;
   unsigned long ultimaSequencia;
+
   int fc;
   int spo2;
+
   long ir;
   long red;
+
   bool dedo;
   String qualidade;
   String batAluno;
+
   int rssi;
   float snr;
+
+  String ppg;
+  int ppgN;
+  unsigned long ppgMs;
+
   unsigned long instanteMs;
 };
 
-EstadoAluno estadoAlunos[totalAlunos];
+EstadoAlunoLocal estadoAlunosLocal[totalAlunos];
 
-// ============================================================
-// FUNCOES AUXILIARES
-// ============================================================
-
-void inicializarEstadoAlunos() {
+void inicializarEstadoAlunosLocal() {
   for (int i = 0; i < totalAlunos; i++) {
-    estadoAlunos[i].id = alunos[i];
-    estadoAlunos[i].atualizado = false;
-    estadoAlunos[i].ultimoCiclo = 0;
-    estadoAlunos[i].ultimaSequencia = 0;
-    estadoAlunos[i].fc = 0;
-    estadoAlunos[i].spo2 = 0;
-    estadoAlunos[i].ir = 0;
-    estadoAlunos[i].red = 0;
-    estadoAlunos[i].dedo = false;
-    estadoAlunos[i].qualidade = "NA";
-    estadoAlunos[i].batAluno = "NA";
-    estadoAlunos[i].rssi = 0;
-    estadoAlunos[i].snr = 0.0f;
-    estadoAlunos[i].instanteMs = 0;
+    estadoAlunosLocal[i].id = alunos[i];
+    estadoAlunosLocal[i].atualizado = false;
+    estadoAlunosLocal[i].ultimoCiclo = 0;
+    estadoAlunosLocal[i].ultimaSequencia = 0;
+    estadoAlunosLocal[i].fc = 0;
+    estadoAlunosLocal[i].spo2 = 0;
+    estadoAlunosLocal[i].ir = 0;
+    estadoAlunosLocal[i].red = 0;
+    estadoAlunosLocal[i].dedo = false;
+    estadoAlunosLocal[i].qualidade = "NA";
+    estadoAlunosLocal[i].batAluno = "NA";
+    estadoAlunosLocal[i].rssi = 0;
+    estadoAlunosLocal[i].snr = 0.0f;
+    estadoAlunosLocal[i].ppg = "";
+    estadoAlunosLocal[i].ppgN = 0;
+    estadoAlunosLocal[i].ppgMs = 0;
+    estadoAlunosLocal[i].instanteMs = 0;
   }
 }
 
-void atualizarEstadoAluno(
+void atualizarEstadoAlunoLocal(
   const String &aluno,
   unsigned long ciclo,
   unsigned long sequencia,
@@ -91,20 +85,35 @@ void atualizarEstadoAluno(
   float snr
 ) {
   for (int i = 0; i < totalAlunos; i++) {
-    if (estadoAlunos[i].id == aluno) {
-      estadoAlunos[i].atualizado = true;
-      estadoAlunos[i].ultimoCiclo = ciclo;
-      estadoAlunos[i].ultimaSequencia = sequencia;
-      estadoAlunos[i].fc = frequenciaCardiaca;
-      estadoAlunos[i].spo2 = spo2;
-      estadoAlunos[i].ir = ir;
-      estadoAlunos[i].red = red;
-      estadoAlunos[i].dedo = dedo;
-      estadoAlunos[i].qualidade = qualidade;
-      estadoAlunos[i].batAluno = batAluno;
-      estadoAlunos[i].rssi = rssi;
-      estadoAlunos[i].snr = snr;
-      estadoAlunos[i].instanteMs = millis();
+    if (estadoAlunosLocal[i].id == aluno) {
+      estadoAlunosLocal[i].atualizado = true;
+      estadoAlunosLocal[i].ultimoCiclo = ciclo;
+      estadoAlunosLocal[i].ultimaSequencia = sequencia;
+      estadoAlunosLocal[i].fc = frequenciaCardiaca;
+      estadoAlunosLocal[i].spo2 = spo2;
+      estadoAlunosLocal[i].ir = ir;
+      estadoAlunosLocal[i].red = red;
+      estadoAlunosLocal[i].dedo = dedo;
+      estadoAlunosLocal[i].qualidade = qualidade;
+      estadoAlunosLocal[i].batAluno = batAluno;
+      estadoAlunosLocal[i].rssi = rssi;
+      estadoAlunosLocal[i].snr = snr;
+      estadoAlunosLocal[i].instanteMs = millis();
+      return;
+    }
+  }
+}
+
+void atualizarPpgEstadoLocalProfessor(
+  const String &aluno,
+  const String &ppg,
+  int ppgN
+) {
+  for (int i = 0; i < totalAlunos; i++) {
+    if (estadoAlunosLocal[i].id == aluno) {
+      estadoAlunosLocal[i].ppg = ppg;
+      estadoAlunosLocal[i].ppgN = ppgN;
+      estadoAlunosLocal[i].ppgMs = millis();
       return;
     }
   }
@@ -217,6 +226,30 @@ void registrarCsvPacoteInvalido(
   Serial.println();
 }
 
+void registrarCsvPpg(
+  const String &aluno,
+  unsigned long sequencia,
+  unsigned long ciclo,
+  int nPpg,
+  int rssi,
+  float snr
+) {
+  Serial.print("CSV_PPG;");
+  Serial.print("ALUNO=");
+  Serial.print(aluno);
+  Serial.print(";SEQ=");
+  Serial.print(sequencia);
+  Serial.print(";CICLO=");
+  Serial.print(ciclo);
+  Serial.print(";N=");
+  Serial.print(nPpg);
+  Serial.print(";RSSI=");
+  Serial.print(rssi);
+  Serial.print(";SNR=");
+  Serial.print(snr, 2);
+  Serial.println();
+}
+
 String proximoAlunoAlvo() {
   String alvo = alunos[indiceAlunoAtual];
 
@@ -255,9 +288,107 @@ bool camposObrigatoriosPresentes(
   );
 }
 
-// ============================================================
-// SETUP
-// ============================================================
+void tentarReceberPpgDebugAposAck(
+  const String &alunoEsperado,
+  unsigned long sequenciaEsperada,
+  unsigned long cicloEsperado
+) {
+  PacoteRecebido pacotePpg = receberMensagemLoRa(tempoEsperaPpgDebugMs);
+
+  if (!pacotePpg.recebido) {
+    Serial.println("PPG debug: nenhum pacote recebido apos ACK.");
+    return;
+  }
+
+  Serial.print("Recebido apos ACK: ");
+  Serial.println(pacotePpg.mensagem);
+  Serial.print("RSSI PPG: ");
+  Serial.print(pacotePpg.rssi);
+  Serial.println(" dBm");
+  Serial.print("SNR PPG: ");
+  Serial.print(pacotePpg.snr);
+  Serial.println(" dB");
+
+  if (!pacoteEhDoTipoIcnp(pacotePpg.mensagem, "PPG")) {
+    Serial.println("PPG debug ignorado: pacote recebido nao e TIPO=PPG.");
+    return;
+  }
+
+  String alunoPpg = extrairCampoIcnp(pacotePpg.mensagem, "ALUNO");
+  String seqPpgTexto = extrairCampoIcnp(pacotePpg.mensagem, "SEQ");
+  String cicloPpgTexto = extrairCampoIcnp(pacotePpg.mensagem, "CICLO");
+  String nPpgTexto = extrairCampoIcnp(pacotePpg.mensagem, "N");
+  String ppg = extrairCampoIcnp(pacotePpg.mensagem, "PPG");
+
+  if (
+    alunoPpg.length() == 0 ||
+    seqPpgTexto.length() == 0 ||
+    cicloPpgTexto.length() == 0 ||
+    nPpgTexto.length() == 0 ||
+    ppg.length() == 0
+  ) {
+    Serial.println("PPG debug invalido: campos obrigatorios ausentes.");
+    return;
+  }
+
+  unsigned long seqPpg = seqPpgTexto.toInt();
+  unsigned long cicloPpg = cicloPpgTexto.toInt();
+  int nPpg = nPpgTexto.toInt();
+
+  if (alunoPpg != alunoEsperado) {
+    Serial.println("PPG debug ignorado: aluno diferente do esperado.");
+    return;
+  }
+
+  if (seqPpg != sequenciaEsperada) {
+    Serial.println("PPG debug ignorado: sequencia diferente da esperada.");
+    return;
+  }
+
+  if (cicloPpg != cicloEsperado) {
+    Serial.println("PPG debug ignorado: ciclo diferente do esperado.");
+    return;
+  }
+
+  if (nPpg <= 0) {
+    Serial.println("PPG debug invalido: N menor ou igual a zero.");
+    return;
+  }
+
+  Serial.print("PPG debug valido; ALUNO=");
+  Serial.print(alunoPpg);
+  Serial.print(";SEQ=");
+  Serial.print(seqPpg);
+  Serial.print(";CICLO=");
+  Serial.print(cicloPpg);
+  Serial.print(";N=");
+  Serial.print(nPpg);
+  Serial.print(";PPG=");
+  Serial.println(ppg);
+
+  atualizarPpgEstadoLocalProfessor(
+    alunoPpg,
+    ppg,
+    nPpg
+  );
+
+  registrarCsvPpg(
+    alunoPpg,
+    seqPpg,
+    cicloPpg,
+    nPpg,
+    pacotePpg.rssi,
+    pacotePpg.snr
+  );
+
+#if API_PROFESSOR_ATIVA
+  atualizarPpgAlunoAPI(
+    alunoPpg.toInt(),
+    ppg,
+    nPpg
+  );
+#endif
+}
 
 void setup() {
   Serial.begin(115200);
@@ -267,11 +398,12 @@ void setup() {
   Serial.println("================================");
   Serial.println("PROFESSOR - ICNP COM PPG REAL + API WIFI STA");
   Serial.println("Placa: Heltec WiFi LoRa 32 V2");
-  Serial.println("Fluxo: BEACON(ALVO) -> DATA(FC/SPO2/IR/RED/DEDO/QUAL/BAT) -> ACK");
+  Serial.println("Fluxo: BEACON(ALVO) -> DATA(FC/SPO2/IR/RED/DEDO/QUAL/BAT) -> ACK -> PPG(DEBUG)");
   Serial.println("API no Professor via Wi-Fi STA");
+  Serial.println("PPG debug: Professor escuta TIPO=PPG apos ACK valido");
   Serial.println("================================");
 
-  inicializarEstadoAlunos();
+  inicializarEstadoAlunosLocal();
 
   iniciarDisplayOled();
   iniciarMonitorBateria();
@@ -289,11 +421,10 @@ void setup() {
 
   Serial.println("Formato CSV:");
   Serial.println("CSV;CICLO=<n>;ALVO=<id>;ALUNO=<id>;SEQ=<seq>;FC=<fc|NA>;SPO2=<spo2|NA>;IR=<ir>;RED=<red>;DEDO=<0|1>;QUAL=<OK|RUIM|NA>;RSSI=<dBm>;SNR=<dB>;BAT_ALUNO=<V|NA>;ENERGIA_PROF=<V|NA>;ACK=<0|1>");
-}
 
-// ============================================================
-// LOOP PRINCIPAL ICNP / LORA
-// ============================================================
+  Serial.println("Formato CSV_PPG:");
+  Serial.println("CSV_PPG;ALUNO=<id>;SEQ=<seq>;CICLO=<n>;N=<amostras>;RSSI=<dBm>;SNR=<dB>");
+}
 
 void loop() {
   atualizarLedSync();
@@ -455,7 +586,7 @@ void loop() {
   enviarMensagemLoRa(ack);
   pulsoLedSync(150);
 
-  atualizarEstadoAluno(
+  atualizarEstadoAlunoLocal(
     aluno,
     cicloAtual,
     sequencia,
@@ -505,6 +636,12 @@ void loop() {
     1
   );
 #endif
+
+  tentarReceberPpgDebugAposAck(
+    aluno,
+    sequencia,
+    cicloAtual
+  );
 
   mostrarTelaProfessor(cicloAtual, alvo, "OK A" + aluno, pacote.rssi, energiaProfessor);
 

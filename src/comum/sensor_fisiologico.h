@@ -23,3 +23,5 @@ float lerDcIrSensorFisiologico();
 float lerAcIrSensorFisiologico();
 float lerDcRedSensorFisiologico();
 float lerAcRedSensorFisiologico();
+
+String montarJanelaPpgNormalizadaApi(int quantidade);
