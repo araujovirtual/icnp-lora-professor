@@ -81,31 +81,136 @@ Abra a pasta no VS Code.
 
 ---
 
-## Configurar portas seriais
+## Configurar o `platformio.ini`
 
-No arquivo `platformio.ini`, ajuste as portas conforme o seu computador.
+O arquivo `platformio.ini` define **qual código será gravado em cada placa** e **qual porta serial será usada** no seu computador.
 
-Exemplo:
+Neste projeto existem três ambientes principais:
+
+| Ambiente | Função | ID gravado no firmware |
+|---|---|---|
+| `professor` | Nó central que envia `BEACON`, recebe `DATA`, envia `ACK` e abre a API | não usa `ID_ALUNO_CONFIG` |
+| `aluno1` | Primeiro nó Aluno | `ID_ALUNO_CONFIG="1"` |
+| `aluno2` | Segundo nó Aluno | `ID_ALUNO_CONFIG="2"` |
+
+### Exemplo completo do `platformio.ini`
+
+Use este modelo como referência. As portas `COM5`, `COM9` e `COM12` são apenas exemplos do computador usado nos testes. No seu computador, substitua cada uma pela porta correta da placa conectada.
 
 ```ini
+[env]
+platform = espressif32
+board = heltec_wifi_lora_32_V2
+framework = arduino
+monitor_speed = 115200
+
+lib_deps =
+    sandeepmistry/LoRa
+    thingpulse/ESP8266 and ESP32 OLED driver for SSD1306 displays
+    sparkfun/SparkFun MAX3010x Pulse and Proximity Sensor Library
+
+build_flags =
+    -I src/comum
+
 [env:professor]
+build_src_filter =
+    +<professor/>
+    +<comum/>
+    -<aluno/>
 upload_port = COM5
 monitor_port = COM5
 
 [env:aluno1]
+build_src_filter =
+    +<aluno/>
+    +<comum/>
+    -<professor/>
 upload_port = COM9
 monitor_port = COM9
+build_flags =
+    ${env.build_flags}
+    -DID_ALUNO_CONFIG=\"1\"
 
 [env:aluno2]
+build_src_filter =
+    +<aluno/>
+    +<comum/>
+    -<professor/>
 upload_port = COM12
 monitor_port = COM12
+build_flags =
+    ${env.build_flags}
+    -DID_ALUNO_CONFIG=\"2\"
 ```
 
-No Windows, veja a porta no **Gerenciador de Dispositivos**. Em outro computador, troque `COM5`, `COM9` e `COM12` pelas portas reais.
+### Onde trocar a porta
+
+Troque somente estas linhas de cada ambiente:
+
+```ini
+upload_port = COMX
+monitor_port = COMX
+```
+
+Exemplo: se o Windows mostrar que a placa do Professor está na porta `COM7`, então o ambiente do Professor deve ficar assim:
+
+```ini
+[env:professor]
+upload_port = COM7
+monitor_port = COM7
+```
+
+Se o Aluno 1 estiver na `COM11`, então:
+
+```ini
+[env:aluno1]
+upload_port = COM11
+monitor_port = COM11
+```
+
+No Windows, veja as portas em:
+
+```text
+Gerenciador de Dispositivos > Portas (COM e LPT)
+```
+
+No Linux/macOS, a porta normalmente aparece como `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/cu.usbserial-*` ou similar. Nesse caso, substitua `COMX` pelo caminho detectado.
+
+Exemplo Linux:
+
+```ini
+upload_port = /dev/ttyUSB0
+monitor_port = /dev/ttyUSB0
+```
+
+### Como criar mais nós Aluno
+
+Os nós Aluno usam o mesmo código-fonte. O que muda é apenas o número gravado em `ID_ALUNO_CONFIG`.
+
+Para criar um `aluno3`, copie o bloco do `aluno2`, troque o nome do ambiente, a porta serial e o número do ID:
+
+```ini
+[env:aluno3]
+build_src_filter =
+    +<aluno/>
+    +<comum/>
+    -<professor/>
+upload_port = COM13
+monitor_port = COM13
+build_flags =
+    ${env.build_flags}
+    -DID_ALUNO_CONFIG=\"3\"
+```
+
+Para criar `aluno4`, use `ID_ALUNO_CONFIG=\"4\"`; para `aluno5`, use `ID_ALUNO_CONFIG=\"5\"`, e assim por diante.
+
+> Observação importante: o número de Alunos suportado na prática depende da configuração do firmware do Professor, do tempo de ciclo, da janela de espera, da taxa LoRa e da quantidade de pacotes `PPG` enviados. A dissertação validou a operação com dois Alunos físicos. Para ampliar para mais Alunos, além de criar novos ambientes no `platformio.ini`, ajuste no firmware do Professor a lista ou quantidade de Alunos que serão chamados pelo campo `ALVO`.
 
 ---
 
-## Gravar o firmware
+## Gravar e monitorar o firmware
+
+Com o `platformio.ini` ajustado, grave uma placa por vez.
 
 ### Professor
 
@@ -128,7 +233,22 @@ pio run -e aluno2 -t upload
 pio device monitor -e aluno2
 ```
 
-O identificador do Aluno é definido no `platformio.ini` por `ID_ALUNO_CONFIG`.
+### Aluno 3 ou superior
+
+Se você criou um ambiente novo, use o nome criado:
+
+```bash
+pio run -e aluno3 -t upload
+pio device monitor -e aluno3
+```
+
+O identificador do Aluno não é escolhido pelo monitor serial. Ele é definido no momento da compilação pela linha:
+
+```ini
+-DID_ALUNO_CONFIG=\"1\"
+```
+
+Portanto, se dois nós forem gravados com o mesmo `ID_ALUNO_CONFIG`, os dois tentarão responder ao mesmo `ALVO`, causando conflito no teste multialuno.
 
 ---
 
