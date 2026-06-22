@@ -14,6 +14,11 @@ static const char* WIFI_AP_SETUP_SSID = "ICNP_PROFESSOR_SETUP";
 static const char* WIFI_AP_SETUP_SENHA = "icnp12345"; // minimo 8 caracteres
 static const unsigned long WIFI_TEMPO_CONEXAO_MS = 15000;
 
+// Tempo maximo sem DATA para considerar um Aluno ativo no painel/API.
+// Se o no Aluno for desligado ou desconectado, o ultimo estado permanece
+// como historico, mas o campo ativo passa para false automaticamente.
+static const unsigned long API_ALUNO_ATIVO_TIMEOUT_MS = 8000;
+
 static bool wifiModoSetup = false;
 static String wifiSsidAtual = "";
 
@@ -1006,7 +1011,7 @@ function drawAll(){
     let p=H(a.aluno).p;
 
     graf('fc'+a.aluno,p,'fc','#6ff26d',40,180,'bpm','sem tendencia de FC valida');
-    graf('sp'+a.aluno,p,'spo2','#70d8ff',80,100,'%','sem tendencia de SpO2 valida');
+    graf('sp'+a.aluno,p,'spo2','#70d8ff',90,100,'%','sem tendencia de SpO2 valida');
     graf('bt'+a.aluno,p,'bat','#ffd15c',3.0,4.2,'V','sem historico de bateria');
     desenharPpg('ppg'+a.aluno,a.ppg,a.ppg_idade_ms);
   });
@@ -1313,11 +1318,20 @@ static void inicializarEstadosApi() {
 // JSON
 // ============================================================
 
+static bool alunoAtivoAgora(const EstadoAlunoAPI& e) {
+  if (e.ultimoMs == 0) {
+    return false;
+  }
+
+  return (millis() - e.ultimoMs) <= API_ALUNO_ATIVO_TIMEOUT_MS;
+}
+
 static String jsonAluno(const EstadoAlunoAPI& e) {
   String json = "{";
   bool primeiro = true;
 
-  campoBool(json, primeiro, "ativo", e.ativo);
+  bool ativoAgora = alunoAtivoAgora(e);
+  campoBool(json, primeiro, "ativo", ativoAgora);
   campoInt(json, primeiro, "aluno", e.aluno);
   campoIntNA(json, primeiro, "seq", e.seq);
   campoIntNA(json, primeiro, "ciclo", e.ciclo);
@@ -2083,7 +2097,8 @@ void atualizarPpgAlunoAPI(
   if (xSemaphoreTake(mutexEstado, pdMS_TO_TICKS(20)) == pdTRUE) {
     EstadoAlunoAPI &e = estadoAlunos[aluno];
 
-    e.ativo = true;
+    // O pacote PPG nao renova sozinho o estado ativo.
+    // A presenca online do Aluno e calculada a partir do ultimo DATA recebido.
     e.aluno = aluno;
     e.ppg = ppg;
     e.ppgN = ppgN;
