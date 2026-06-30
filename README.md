@@ -139,9 +139,10 @@ Instale:
 3. Git;
 4. driver USB da placa, se necessário.
 
-Bibliotecas usadas pelo `platformio.ini`:
+Bibliotecas usadas pelo `platformio.ini` atual:
 
 ```ini
+olikraus/U8g2
 sandeepmistry/LoRa
 thingpulse/ESP8266 and ESP32 OLED driver for SSD1306 displays
 sparkfun/SparkFun MAX3010x Pulse and Proximity Sensor Library
@@ -180,8 +181,8 @@ platform = espressif32
 board = heltec_wifi_lora_32_V2
 framework = arduino
 monitor_speed = 115200
-
 lib_deps =
+    olikraus/U8g2
     sandeepmistry/LoRa
     thingpulse/ESP8266 and ESP32 OLED driver for SSD1306 displays
     sparkfun/SparkFun MAX3010x Pulse and Proximity Sensor Library
@@ -202,8 +203,8 @@ build_src_filter =
     +<aluno/>
     +<comum/>
     -<professor/>
-upload_port = COM9
-monitor_port = COM9
+upload_port = COM14
+monitor_port = COM14
 build_flags =
     ${env.build_flags}
     -DID_ALUNO_CONFIG=\"1\"
@@ -213,14 +214,14 @@ build_src_filter =
     +<aluno/>
     +<comum/>
     -<professor/>
-upload_port = COM12
-monitor_port = COM12
+upload_port = COM16
+monitor_port = COM16
 build_flags =
     ${env.build_flags}
     -DID_ALUNO_CONFIG=\"2\"
 ```
 
-As portas `COM5`, `COM9` e `COM12` são apenas exemplos. No Windows, veja as portas em:
+As portas `COM5`, `COM14` e `COM16` são as portas usadas no recorte atual; ajuste se o seu Windows indicar portas diferentes. No Windows, veja as portas em:
 
 ```text
 Gerenciador de Dispositivos > Portas (COM e LPT)
@@ -248,8 +249,8 @@ build_src_filter =
     +<aluno/>
     +<comum/>
     -<professor/>
-upload_port = COM13
-monitor_port = COM13
+upload_port = COM17
+monitor_port = COM17
 build_flags =
     ${env.build_flags}
     -DID_ALUNO_CONFIG=\"3\"
