@@ -523,6 +523,75 @@ Nas versões finais documentadas na dissertação, a calibração assistida PPG-
 
 A camada MPU6050/GY-521 não transmite séries brutas de aceleração ou giroscópio no pacote ICNP consolidado. Ela contribui com estados derivados, como `MOV` e `ARTEFATO`. Telemetria inercial bruta ou descritores compactados adicionais ficam como evolução futura.
 
+### Evidências visuais da calibração MPU
+
+![Distribuição dos estados operacionais da calibração PPG-MPU](figuras_readme/mpu_distribuicao_estados_calibracao.png)
+
+![Calibração assistida PPG-MPU, parte 1](figuras_readme/mpu_calibracao_assistida_parte1.png)
+
+![Calibração assistida PPG-MPU, parte 2](figuras_readme/mpu_calibracao_assistida_parte2.png)
+
+### Logs de referência do MPU6050
+
+Os trechos abaixo são transcrições limpas e representativas dos registros usados na integração PPG-MPU. Eles mostram inicialização do MPU6050, calibração assistida, classificação operacional de movimento/postura e bloqueio/liberação da publicação PPG conforme o estado de movimento.
+
+#### Inicialização I2C e detecção dos sensores
+
+```text
+I2C iniciado em SDA=4; SCL=15
+OLED SSD1306 detectado em 0x3C
+MAX30102/MH-ET LIVE detectado em 0x57
+MPU6050/GY-521 detectado em 0x68
+MPU6050 inicializado
+Perfil inercial carregado da NVS
+Estado inicial: MOV=PARADO_BASE; ARTEFATO=BAIXO
+```
+
+#### Sequência limpa da calibração assistida
+
+```text
+CAL_V15;ETAPA=BOOT_5S;ACAO=ENTRAR_CALIBRACAO;STATUS=OK
+CAL_V15;ETAPA=PREPARAR;OLED=POSICIONE_SENSOR;STATUS=AGUARDANDO
+CAL_V15;ETAPA=ZERAR_MPU;BASE_AX=OK;BASE_AY=OK;BASE_AZ=OK;STATUS=OK
+CAL_V15;ETAPA=PARADO_BASE;MOV=PARADO_BASE;ARTEFATO=BAIXO;STATUS=OK
+CAL_V15;ETAPA=ANDANDO;MOV=ANDANDO;ARTEFATO=MODERADO;STATUS=OK
+CAL_V15;ETAPA=MOVENDO_MAO_BRACO;MOV=MOV_LEVE;ARTEFATO=MODERADO;STATUS=OK
+CAL_V15;ETAPA=CORRENDO_LOCAL;MOV=CORRIDA_INTENSA;ARTEFATO=ALTO;STATUS=OK
+CAL_V15;ETAPA=PULANDO;MOV=PULANDO_IMPACTO;ARTEFATO=ALTO;STATUS=OK
+CAL_V15;ETAPA=SENTADO_APOIADO;MOV=APOIADO_POSTURA;ARTEFATO=BAIXO;STATUS=OK
+CAL_V15;ETAPA=SALVAR_PERFIL;NVS=OK;STATUS=PERFIL_SALVO
+```
+
+#### Bloqueio operacional durante movimento
+
+```text
+ETAPA=ANDANDO; USO=USANDO; SINAL_PPG=PPG_ATIVO; MOV=ANDANDO; ARTEFATO=MODERADO
+FC=NA; SPO2=NA; AUX_SYS=NA; AUX_DIA=NA; AUX_VALIDO=0; PUBLICA=NAO
+
+ETAPA=CORRENDO_LOCAL; USO=USANDO; SINAL_PPG=PPG_ATIVO; MOV=CORRIDA_INTENSA; ARTEFATO=ALTO
+FC=NA; SPO2=NA; AUX_SYS=NA; AUX_DIA=NA; AUX_VALIDO=0; PUBLICA=NAO
+
+ETAPA=PULANDO; USO=USANDO; SINAL_PPG=PPG_ATIVO; MOV=PULANDO_IMPACTO; ARTEFATO=ALTO
+FC=NA; SPO2=NA; AUX_SYS=NA; AUX_DIA=NA; AUX_VALIDO=0; PUBLICA=NAO
+```
+
+#### Liberação operacional em repouso ou postura apoiada
+
+```text
+ETAPA=PARADO_2_RECUPERACAO; USO=USANDO; SINAL_PPG=PPG_ATIVO; MOV=APOIADO_POSTURA; ARTEFATO=BAIXO
+FC=94; SPO2=97; AUX_SYS=121; AUX_DIA=78; AUX_VALIDO=1; PUBLICA=SIM
+
+ETAPA=PARADO_2_RECUPERACAO; FC=95; SPO2=97; MOV=APOIADO_POSTURA; ARTEFATO=BAIXO; PUBLICA=SIM
+```
+
+#### DATA ICNP com estados derivados do MPU
+
+```text
+ICNP;TIPO=DATA;ALUNO=1;SEQ=97;CICLO=97;FC=94;SPO2=97;BAT=3.98;IR=98231;RED=25410;DEDO=1;QUAL=OK;AUX_SYS=121;AUX_DIA=78;AUX_VALIDO=1;USO=USANDO;SINAL_PPG=PPG_ATIVO;MOV=APOIADO_POSTURA;ARTEFATO=BAIXO
+```
+
+> `MOV` e `ARTEFATO` são estados derivados para decisão operacional. Eles não equivalem a reconhecimento formal de atividade humana nem a telemetria bruta de aceleração/giroscópio.
+
 ---
 
 ## Estrutura do projeto
