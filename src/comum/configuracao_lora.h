@@ -14,4 +14,7 @@
 #define LORA_SIGNAL_BANDWIDTH 125E3
 #define LORA_CODING_RATE 5
 
+// V16.2: potencia reduzida para diminuir pico de corrente no TX LoRa e evitar brownout.
+#define LORA_TX_POWER_DBM 14
+
 #endif

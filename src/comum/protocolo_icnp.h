@@ -20,7 +20,14 @@ String montarDataIcnp(
   long ir,
   long red,
   bool dedoDetectado,
-  const String &qualidade
+  const String &qualidade,
+  int pressaoSistolica,
+  int pressaoDiastolica,
+  const String &uso,
+  const String &sinalPpg,
+  bool paValida,
+  const String &movimento,
+  const String &artefatoPpg
 );
 
 String montarAckIcnp(

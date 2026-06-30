@@ -9,9 +9,12 @@
 
 #define API_PROFESSOR_ATIVA 1
 
-const unsigned long intervaloBeaconMs = 2000;
-const unsigned long tempoEsperaDataMs = 1200;
-const unsigned long tempoEsperaPpgDebugMs = 900;
+const unsigned long intervaloBeaconMs = 650;
+const unsigned long tempoEsperaDataMs = 500;
+// V16.14: so aguardamos PPG quando o DATA indica janela fisiologica valida.
+// Como agora a escuta comeca imediatamente apos o ACK, esta janela pode ser
+// maior sem atrasar ciclos que nao possuem PPG.
+const unsigned long tempoEsperaPpgDebugMs = 650;
 
 const String alunos[] = {"1", "2"};
 const int totalAlunos = 2;
@@ -28,6 +31,13 @@ struct EstadoAlunoLocal {
 
   int fc;
   int spo2;
+  int pressaoSistolica;
+  int pressaoDiastolica;
+  String uso;
+  String sinalPpg;
+  bool paValida;
+  String movimento;
+  String artefatoPpg;
 
   long ir;
   long red;
@@ -56,6 +66,13 @@ void inicializarEstadoAlunosLocal() {
     estadoAlunosLocal[i].ultimaSequencia = 0;
     estadoAlunosLocal[i].fc = 0;
     estadoAlunosLocal[i].spo2 = 0;
+    estadoAlunosLocal[i].pressaoSistolica = 0;
+    estadoAlunosLocal[i].pressaoDiastolica = 0;
+    estadoAlunosLocal[i].uso = "SEM_CONTATO";
+    estadoAlunosLocal[i].sinalPpg = "SEM_CONTATO";
+    estadoAlunosLocal[i].paValida = false;
+    estadoAlunosLocal[i].movimento = "NA";
+    estadoAlunosLocal[i].artefatoPpg = "NA";
     estadoAlunosLocal[i].ir = 0;
     estadoAlunosLocal[i].red = 0;
     estadoAlunosLocal[i].dedo = false;
@@ -76,6 +93,13 @@ void atualizarEstadoAlunoLocal(
   unsigned long sequencia,
   int frequenciaCardiaca,
   int spo2,
+  int pressaoSistolica,
+  int pressaoDiastolica,
+  const String &uso,
+  const String &sinalPpg,
+  bool paValida,
+  const String &movimento,
+  const String &artefatoPpg,
   long ir,
   long red,
   bool dedo,
@@ -91,6 +115,13 @@ void atualizarEstadoAlunoLocal(
       estadoAlunosLocal[i].ultimaSequencia = sequencia;
       estadoAlunosLocal[i].fc = frequenciaCardiaca;
       estadoAlunosLocal[i].spo2 = spo2;
+      estadoAlunosLocal[i].pressaoSistolica = pressaoSistolica;
+      estadoAlunosLocal[i].pressaoDiastolica = pressaoDiastolica;
+      estadoAlunosLocal[i].uso = uso;
+      estadoAlunosLocal[i].sinalPpg = sinalPpg;
+      estadoAlunosLocal[i].paValida = paValida;
+      estadoAlunosLocal[i].movimento = movimento;
+      estadoAlunosLocal[i].artefatoPpg = artefatoPpg;
       estadoAlunosLocal[i].ir = ir;
       estadoAlunosLocal[i].red = red;
       estadoAlunosLocal[i].dedo = dedo;
@@ -126,6 +157,13 @@ void registrarCsvSucesso(
   unsigned long sequencia,
   int frequenciaCardiaca,
   int spo2,
+  int pressaoSistolica,
+  int pressaoDiastolica,
+  const String &uso,
+  const String &sinalPpg,
+  bool paValida,
+  const String &movimento,
+  const String &artefatoPpg,
   long ir,
   long red,
   bool dedo,
@@ -148,6 +186,20 @@ void registrarCsvSucesso(
   Serial.print(frequenciaCardiaca > 0 ? String(frequenciaCardiaca) : "NA");
   Serial.print(";SPO2=");
   Serial.print(spo2 > 0 ? String(spo2) : "NA");
+  Serial.print(";SYS=");
+  Serial.print(pressaoSistolica > 0 ? String(pressaoSistolica) : "NA");
+  Serial.print(";DIA=");
+  Serial.print(pressaoDiastolica > 0 ? String(pressaoDiastolica) : "NA");
+  Serial.print(";USO=");
+  Serial.print(uso);
+  Serial.print(";SINAL_PPG=");
+  Serial.print(sinalPpg);
+  Serial.print(";PA_VALIDA=");
+  Serial.print(paValida ? "1" : "0");
+  Serial.print(";MOV=");
+  Serial.print(movimento);
+  Serial.print(";ARTEFATO=");
+  Serial.print(artefatoPpg);
   Serial.print(";IR=");
   Serial.print(ir);
   Serial.print(";RED=");
@@ -182,6 +234,13 @@ void registrarCsvTimeout(
   Serial.print(";SEQ=NA");
   Serial.print(";FC=NA");
   Serial.print(";SPO2=NA");
+  Serial.print(";SYS=NA");
+  Serial.print(";DIA=NA");
+  Serial.print(";USO=NA");
+  Serial.print(";SINAL_PPG=NA");
+  Serial.print(";PA_VALIDA=NA");
+  Serial.print(";MOV=NA");
+  Serial.print(";ARTEFATO=NA");
   Serial.print(";IR=NA");
   Serial.print(";RED=NA");
   Serial.print(";DEDO=NA");
@@ -211,6 +270,13 @@ void registrarCsvPacoteInvalido(
   Serial.print(";SEQ=INVALIDO");
   Serial.print(";FC=INVALIDO");
   Serial.print(";SPO2=INVALIDO");
+  Serial.print(";SYS=INVALIDO");
+  Serial.print(";DIA=INVALIDO");
+  Serial.print(";USO=INVALIDO");
+  Serial.print(";SINAL_PPG=INVALIDO");
+  Serial.print(";PA_VALIDA=INVALIDO");
+  Serial.print(";MOV=INVALIDO");
+  Serial.print(";ARTEFATO=INVALIDO");
   Serial.print(";IR=INVALIDO");
   Serial.print(";RED=INVALIDO");
   Serial.print(";DEDO=INVALIDO");
@@ -391,16 +457,16 @@ void tentarReceberPpgDebugAposAck(
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(230400);
   delay(1000);
 
   Serial.println();
   Serial.println("================================");
-  Serial.println("PROFESSOR - ICNP COM PPG REAL + API WIFI STA");
+  Serial.println("PROFESSOR - ICNP V16.14 COM PPG REAL + API WIFI STA");
   Serial.println("Placa: Heltec WiFi LoRa 32 V2");
-  Serial.println("Fluxo: BEACON(ALVO) -> DATA(FC/SPO2/IR/RED/DEDO/QUAL/BAT) -> ACK -> PPG(DEBUG)");
+  Serial.println("Fluxo: BEACON(ALVO) -> DATA(FC/SPO2/PA_EXP/IR/RED/USO/SINAL_PPG/BAT) -> ACK -> PPG(DEBUG)");
   Serial.println("API no Professor via Wi-Fi STA");
-  Serial.println("PPG debug: Professor escuta TIPO=PPG apos ACK valido");
+  Serial.println("PPG debug: escuta imediata apos ACK valido; ciclo 650ms e PPG sem colisao com proximo BEACON");
   Serial.println("================================");
 
   inicializarEstadoAlunosLocal();
@@ -420,7 +486,7 @@ void setup() {
   mostrarTelaProfessor(0, "-", "AGUARDANDO", 0, textoEnergia());
 
   Serial.println("Formato CSV:");
-  Serial.println("CSV;CICLO=<n>;ALVO=<id>;ALUNO=<id>;SEQ=<seq>;FC=<fc|NA>;SPO2=<spo2|NA>;IR=<ir>;RED=<red>;DEDO=<0|1>;QUAL=<OK|RUIM|NA>;RSSI=<dBm>;SNR=<dB>;BAT_ALUNO=<V|NA>;ENERGIA_PROF=<V|NA>;ACK=<0|1>");
+  Serial.println("CSV;CICLO=<n>;ALVO=<id>;ALUNO=<id>;SEQ=<seq>;FC=<fc|NA>;SPO2=<spo2|NA>;SYS=<sys|NA>;DIA=<dia|NA>;USO=<USANDO|SEM_CONTATO>;SINAL_PPG=<...>;PA_VALIDA=<0|1>;MOV=<classe>;ARTEFATO=<BAIXO|MEDIO|ALTO>;IR=<ir>;RED=<red>;DEDO=<0|1>;QUAL=<OK|RUIM|NA>;RSSI=<dBm>;SNR=<dB>;BAT_ALUNO=<V|NA>;ENERGIA_PROF=<V|NA>;ACK=<0|1>");
 
   Serial.println("Formato CSV_PPG:");
   Serial.println("CSV_PPG;ALUNO=<id>;SEQ=<seq>;CICLO=<n>;N=<amostras>;RSSI=<dBm>;SNR=<dB>");
@@ -508,6 +574,22 @@ void loop() {
   String redTexto = extrairCampoIcnp(pacote.mensagem, "RED");
   String dedoTexto = extrairCampoIcnp(pacote.mensagem, "DEDO");
   String qualidade = extrairCampoIcnp(pacote.mensagem, "QUAL");
+  String sysTexto = extrairCampoIcnp(pacote.mensagem, "SYS");
+  String diaTexto = extrairCampoIcnp(pacote.mensagem, "DIA");
+  String uso = extrairCampoIcnp(pacote.mensagem, "USO");
+  String sinalPpg = extrairCampoIcnp(pacote.mensagem, "SINAL_PPG");
+  String paValidaTexto = extrairCampoIcnp(pacote.mensagem, "PA_VALIDA");
+  String movimento = extrairCampoIcnp(pacote.mensagem, "MOV");
+  String artefatoPpg = extrairCampoIcnp(pacote.mensagem, "ARTEFATO");
+
+  if (uso.length() == 0) {
+    uso = dedoTexto == "1" ? "USANDO" : "SEM_CONTATO";
+  }
+
+  if (sinalPpg.length() == 0) {
+    sinalPpg = qualidade == "OK" ? "PPG_ATIVO" : (dedoTexto == "1" ? "SINAL_INSTAVEL" : "SEM_CONTATO");
+  }
+
 
   if (!camposObrigatoriosPresentes(
     aluno,
@@ -548,9 +630,26 @@ void loop() {
   unsigned long cicloRecebido = cicloTexto.toInt();
   int frequenciaCardiaca = fcTexto.toInt();
   int spo2 = spo2Texto.toInt();
+  int pressaoSistolica = sysTexto.length() > 0 ? sysTexto.toInt() : 0;
+  int pressaoDiastolica = diaTexto.length() > 0 ? diaTexto.toInt() : 0;
   long ir = irTexto.toInt();
   long red = redTexto.toInt();
   bool dedo = dedoTexto == "1";
+
+  bool paValida = (paValidaTexto == "1");
+  if (movimento.length() == 0) {
+    movimento = "NA";
+  }
+  if (artefatoPpg.length() == 0) {
+    artefatoPpg = "NA";
+  }
+
+  if (!paValida) {
+    frequenciaCardiaca = 0;
+    spo2 = 0;
+    pressaoSistolica = 0;
+    pressaoDiastolica = 0;
+  }
 
   if (cicloRecebido != cicloAtual) {
     pulsoLedSync(300);
@@ -570,6 +669,24 @@ void loop() {
   Serial.println(frequenciaCardiaca);
   Serial.print("SpO2 recebido: ");
   Serial.println(spo2);
+  Serial.print("PA experimental recebida: ");
+  if (pressaoSistolica > 0 && pressaoDiastolica > 0) {
+    Serial.print(pressaoSistolica);
+    Serial.print("x");
+    Serial.println(pressaoDiastolica);
+  } else {
+    Serial.println("NA");
+  }
+  Serial.print("Uso sensor: ");
+  Serial.println(uso);
+  Serial.print("Sinal PPG: ");
+  Serial.println(sinalPpg);
+  Serial.print("PA valida: ");
+  Serial.println(paValida ? "SIM" : "NAO");
+  Serial.print("Movimento: ");
+  Serial.println(movimento);
+  Serial.print("Artefato PPG: ");
+  Serial.println(artefatoPpg);
   Serial.print("IR recebido: ");
   Serial.println(ir);
   Serial.print("RED recebido: ");
@@ -584,7 +701,24 @@ void loop() {
   Serial.println(ack);
 
   enviarMensagemLoRa(ack);
-  pulsoLedSync(150);
+
+  // V16.14: o pacote PPG era perdido porque o Professor so entrava em RX
+  // depois de atualizar API/CSV e piscar LED. Enquanto isso, o Aluno ja
+  // transmitia o TIPO=PPG; o pacote chegava atrasado e colidia com o proximo
+  // BEACON. Agora a escuta ocorre imediatamente apos o ACK e somente quando
+  // o Aluno realmente deve enviar PPG.
+  bool deveReceberPpgDebug = dedo && paValida && qualidade == "OK";
+  if (deveReceberPpgDebug) {
+    tentarReceberPpgDebugAposAck(
+      aluno,
+      sequencia,
+      cicloAtual
+    );
+  } else {
+    Serial.println("PPG debug: nao aguardado neste ciclo (sem janela PPG valida).");
+  }
+
+  pulsoLedSync(60);
 
   atualizarEstadoAlunoLocal(
     aluno,
@@ -592,6 +726,13 @@ void loop() {
     sequencia,
     frequenciaCardiaca,
     spo2,
+    pressaoSistolica,
+    pressaoDiastolica,
+    uso,
+    sinalPpg,
+    paValida,
+    movimento,
+    artefatoPpg,
     ir,
     red,
     dedo,
@@ -608,6 +749,13 @@ void loop() {
     sequencia,
     frequenciaCardiaca,
     spo2,
+    pressaoSistolica,
+    pressaoDiastolica,
+    uso,
+    sinalPpg,
+    paValida,
+    movimento,
+    artefatoPpg,
     ir,
     red,
     dedo,
@@ -625,10 +773,17 @@ void loop() {
     (int)cicloAtual,
     frequenciaCardiaca > 0 ? frequenciaCardiaca : -1,
     spo2 > 0 ? spo2 : -1,
+    pressaoSistolica > 0 ? pressaoSistolica : -1,
+    pressaoDiastolica > 0 ? pressaoDiastolica : -1,
     ir,
     red,
     dedo ? 1 : 0,
     qualidade,
+    uso,
+    sinalPpg,
+    paValida ? 1 : 0,
+    movimento,
+    artefatoPpg,
     pacote.rssi,
     pacote.snr,
     batAluno.toFloat(),
@@ -636,12 +791,6 @@ void loop() {
     1
   );
 #endif
-
-  tentarReceberPpgDebugAposAck(
-    aluno,
-    sequencia,
-    cicloAtual
-  );
 
   mostrarTelaProfessor(cicloAtual, alvo, "OK A" + aluno, pacote.rssi, energiaProfessor);
 

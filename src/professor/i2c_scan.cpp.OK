@@ -1,0 +1,113 @@
+#include <Arduino.h>
+#include <Wire.h>
+
+// Heltec WiFi LoRa 32 V2
+#define I2C_SDA   4
+#define I2C_SCL   15
+#define OLED_RST  16
+
+void resetarOLEDHeltec() {
+  pinMode(OLED_RST, OUTPUT);
+
+  // Libera/reset do OLED interno da Heltec.
+  digitalWrite(OLED_RST, LOW);
+  delay(50);
+  digitalWrite(OLED_RST, HIGH);
+  delay(100);
+}
+
+String nomeDispositivoI2C(uint8_t endereco) {
+  switch (endereco) {
+    case 0x3C:
+      return "OLED SSD1306 Heltec";
+    case 0x57:
+      return "MAX30102 / MH-ET LIVE PPG";
+    case 0x68:
+      return "MPU6050 / GY-521";
+    case 0x69:
+      return "MPU6050 / GY-521 AD0=HIGH";
+    default:
+      return "Dispositivo I2C desconhecido";
+  }
+}
+
+void escanearI2C() {
+  byte erro;
+  int encontrados = 0;
+
+  Serial.println();
+  Serial.println("====================================");
+  Serial.println(" SCANNER I2C - HELTEC WIFI LORA 32 V2");
+  Serial.println(" SDA = GPIO 4");
+  Serial.println(" SCL = GPIO 15");
+  Serial.println("====================================");
+
+  for (uint8_t endereco = 1; endereco < 127; endereco++) {
+    Wire.beginTransmission(endereco);
+    erro = Wire.endTransmission();
+
+    if (erro == 0) {
+      Serial.print("I2C encontrado em 0x");
+
+      if (endereco < 16) {
+        Serial.print("0");
+      }
+
+      Serial.print(endereco, HEX);
+      Serial.print(" -> ");
+      Serial.println(nomeDispositivoI2C(endereco));
+
+      encontrados++;
+      delay(10);
+    } 
+    else if (erro == 4) {
+      Serial.print("Erro desconhecido no endereco 0x");
+
+      if (endereco < 16) {
+        Serial.print("0");
+      }
+
+      Serial.println(endereco, HEX);
+    }
+  }
+
+  Serial.println("------------------------------------");
+
+  if (encontrados == 0) {
+    Serial.println("Nenhum dispositivo I2C encontrado.");
+    Serial.println("Verifique:");
+    Serial.println("- GND comum entre Heltec, MAX30102 e MPU6050");
+    Serial.println("- Sensores alimentados pelo 3V3 da Heltec");
+    Serial.println("- SDA no GPIO 4");
+    Serial.println("- SCL no GPIO 15");
+    Serial.println("- Se SDA e SCL nao foram invertidos");
+  } else {
+    Serial.print("Total encontrado: ");
+    Serial.println(encontrados);
+  }
+
+  Serial.println("====================================");
+  Serial.println();
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("Inicializando scanner I2C...");
+
+  resetarOLEDHeltec();
+
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(100000); // 100 kHz para teste mais seguro
+
+  delay(500);
+
+  escanearI2C();
+}
+
+void loop() {
+  delay(5000);
+  escanearI2C();
+}

@@ -1,0 +1,322 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <U8g2lib.h>
+#include "MAX30105.h"
+
+// =====================================================
+// Heltec WiFi LoRa 32 V2
+// =====================================================
+#define I2C_SDA   4
+#define I2C_SCL   15
+#define OLED_RST  16
+
+#define ENDERECO_OLED     0x3C
+#define ENDERECO_MAX30102 0x57
+#define ENDERECO_MPU_1    0x68
+#define ENDERECO_MPU_2    0x69
+
+// Ajuste fino conforme seu sensor.
+// No seu teste real, com dedo/pulso bom, o IR ficava alto.
+#define LIMIAR_DEDO_IR 50000
+
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C display(U8G2_R0, OLED_RST);
+MAX30105 maxSensor;
+
+bool oledEncontrado = false;
+bool maxEncontrado = false;
+bool mpuEncontrado = false;
+uint8_t enderecoMpu = ENDERECO_MPU_1;
+
+long irAtual = 0;
+long redAtual = 0;
+
+int16_t axRaw = 0;
+int16_t ayRaw = 0;
+int16_t azRaw = 0;
+
+float axG = 0.0;
+float ayG = 0.0;
+float azG = 0.0;
+
+// =====================================================
+// Funcoes auxiliares
+// =====================================================
+
+void resetarOLEDHeltec() {
+  pinMode(OLED_RST, OUTPUT);
+
+  digitalWrite(OLED_RST, LOW);
+  delay(50);
+
+  digitalWrite(OLED_RST, HIGH);
+  delay(100);
+}
+
+bool existeI2C(uint8_t endereco) {
+  Wire.beginTransmission(endereco);
+  byte erro = Wire.endTransmission();
+  return erro == 0;
+}
+
+void escreverRegistro(uint8_t endereco, uint8_t reg, uint8_t valor) {
+  Wire.beginTransmission(endereco);
+  Wire.write(reg);
+  Wire.write(valor);
+  Wire.endTransmission();
+}
+
+uint8_t lerRegistro(uint8_t endereco, uint8_t reg) {
+  Wire.beginTransmission(endereco);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(endereco, (uint8_t)1);
+
+  if (Wire.available()) {
+    return Wire.read();
+  }
+
+  return 0;
+}
+
+void inicializarMPU6050() {
+  // Acorda o MPU6050.
+  // Registro PWR_MGMT_1 = 0x6B
+  escreverRegistro(enderecoMpu, 0x6B, 0x00);
+  delay(100);
+
+  // Configura acelerometro em +/- 2g.
+  // Registro ACCEL_CONFIG = 0x1C
+  escreverRegistro(enderecoMpu, 0x1C, 0x00);
+  delay(50);
+
+  // Configura giroscopio em +/- 250 graus/s.
+  // Registro GYRO_CONFIG = 0x1B
+  escreverRegistro(enderecoMpu, 0x1B, 0x00);
+  delay(50);
+}
+
+void lerMPU6050() {
+  Wire.beginTransmission(enderecoMpu);
+  Wire.write(0x3B); // ACCEL_XOUT_H
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(enderecoMpu, (uint8_t)6);
+
+  if (Wire.available() >= 6) {
+    axRaw = (Wire.read() << 8) | Wire.read();
+    ayRaw = (Wire.read() << 8) | Wire.read();
+    azRaw = (Wire.read() << 8) | Wire.read();
+
+    // Para escala +/- 2g, sensibilidade = 16384 LSB/g
+    axG = axRaw / 16384.0;
+    ayG = ayRaw / 16384.0;
+    azG = azRaw / 16384.0;
+  }
+}
+
+bool inicializarMAX30102() {
+  if (!maxSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    return false;
+  }
+
+  byte ledBrightness = 0x1F;
+  byte sampleAverage = 4;
+  byte ledMode = 2;       // RED + IR
+  int sampleRate = 100;
+  int pulseWidth = 411;
+  int adcRange = 4096;
+
+  maxSensor.setup(
+    ledBrightness,
+    sampleAverage,
+    ledMode,
+    sampleRate,
+    pulseWidth,
+    adcRange
+  );
+
+  maxSensor.setPulseAmplitudeRed(0x1F);
+  maxSensor.setPulseAmplitudeIR(0x1F);
+  maxSensor.setPulseAmplitudeGreen(0);
+
+  return true;
+}
+
+void lerMAX30102() {
+  irAtual = maxSensor.getIR();
+  redAtual = maxSensor.getRed();
+}
+
+bool dedoDetectado() {
+  return irAtual > LIMIAR_DEDO_IR;
+}
+
+// =====================================================
+// Telas OLED
+// =====================================================
+
+void mostrarTelaInicial() {
+  display.clearBuffer();
+  display.setFont(u8g2_font_6x12_tf);
+
+  display.drawStr(0, 12, "Teste I2C + Sensores");
+  display.drawStr(0, 28, "Heltec V2");
+  display.drawStr(0, 44, "SDA GPIO 4");
+  display.drawStr(0, 58, "SCL GPIO 15");
+
+  display.sendBuffer();
+}
+
+void mostrarTelaErro() {
+  display.clearBuffer();
+  display.setFont(u8g2_font_6x12_tf);
+
+  display.drawStr(0, 10, "DISPOSITIVOS I2C");
+
+  char linha[32];
+
+  snprintf(linha, sizeof(linha), "OLED: %s", oledEncontrado ? "OK" : "NAO");
+  display.drawStr(0, 24, linha);
+
+  snprintf(linha, sizeof(linha), "MAX:  %s", maxEncontrado ? "OK" : "NAO");
+  display.drawStr(0, 38, linha);
+
+  snprintf(linha, sizeof(linha), "MPU:  %s", mpuEncontrado ? "OK" : "NAO");
+  display.drawStr(0, 52, linha);
+
+  display.sendBuffer();
+}
+
+void mostrarTelaDados() {
+  display.clearBuffer();
+  display.setFont(u8g2_font_6x12_tf);
+
+  char linha[40];
+
+  display.drawStr(0, 10, "MAX30102 + MPU6050");
+
+  snprintf(linha, sizeof(linha), "AX:% .2f AY:% .2f", axG, ayG);
+  display.drawStr(0, 24, linha);
+
+  snprintf(linha, sizeof(linha), "AZ:% .2f g", azG);
+  display.drawStr(0, 36, linha);
+
+  snprintf(linha, sizeof(linha), "IR:%ld", irAtual);
+  display.drawStr(0, 49, linha);
+
+  snprintf(
+    linha,
+    sizeof(linha),
+    "DEDO:%s",
+    dedoDetectado() ? "SIM" : "NAO"
+  );
+  display.drawStr(0, 62, linha);
+
+  display.sendBuffer();
+}
+
+// =====================================================
+// Scanner
+// =====================================================
+
+void escanearDispositivos() {
+  oledEncontrado = existeI2C(ENDERECO_OLED);
+  maxEncontrado = existeI2C(ENDERECO_MAX30102);
+
+  if (existeI2C(ENDERECO_MPU_1)) {
+    mpuEncontrado = true;
+    enderecoMpu = ENDERECO_MPU_1;
+  } else if (existeI2C(ENDERECO_MPU_2)) {
+    mpuEncontrado = true;
+    enderecoMpu = ENDERECO_MPU_2;
+  } else {
+    mpuEncontrado = false;
+  }
+
+  Serial.println();
+  Serial.println("===== RESULTADO I2C =====");
+
+  Serial.print("OLED 0x3C: ");
+  Serial.println(oledEncontrado ? "OK" : "NAO ENCONTRADO");
+
+  Serial.print("MAX30102 0x57: ");
+  Serial.println(maxEncontrado ? "OK" : "NAO ENCONTRADO");
+
+  Serial.print("MPU6050: ");
+  if (mpuEncontrado) {
+    Serial.print("OK em 0x");
+    Serial.println(enderecoMpu, HEX);
+  } else {
+    Serial.println("NAO ENCONTRADO");
+  }
+
+  Serial.println("=========================");
+}
+
+// =====================================================
+// Setup e loop
+// =====================================================
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("Inicializando teste MAX30102 + MPU6050 no OLED...");
+
+  resetarOLEDHeltec();
+
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(100000);
+
+  display.setI2CAddress(ENDERECO_OLED * 2);
+  display.begin();
+  display.setBusClock(100000);
+
+  mostrarTelaInicial();
+  delay(1500);
+
+  escanearDispositivos();
+
+  if (mpuEncontrado) {
+    inicializarMPU6050();
+  }
+
+  if (maxEncontrado) {
+    maxEncontrado = inicializarMAX30102();
+  }
+
+  if (!maxEncontrado || !mpuEncontrado) {
+    mostrarTelaErro();
+  }
+}
+
+void loop() {
+  if (maxEncontrado && mpuEncontrado) {
+    lerMPU6050();
+    lerMAX30102();
+
+    mostrarTelaDados();
+
+    Serial.print("MPU;AX=");
+    Serial.print(axG, 3);
+    Serial.print(";AY=");
+    Serial.print(ayG, 3);
+    Serial.print(";AZ=");
+    Serial.print(azG, 3);
+
+    Serial.print(";MAX_IR=");
+    Serial.print(irAtual);
+    Serial.print(";MAX_RED=");
+    Serial.print(redAtual);
+
+    Serial.print(";DEDO=");
+    Serial.println(dedoDetectado() ? "SIM" : "NAO");
+  } else {
+    escanearDispositivos();
+    mostrarTelaErro();
+  }
+
+  delay(300);
+}

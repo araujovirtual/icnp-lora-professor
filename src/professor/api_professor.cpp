@@ -58,6 +58,10 @@ static const char PAGINA_HTML[] = R"ICNPHTML(
   .sub{font-size:12px;color:#9daec5;margin-top:3px}
   .btn{background:#172232;border:1px solid #32435a;color:#eaf1fb;border-radius:9px;padding:7px 10px;font-weight:700;cursor:pointer}
   .btn.ativo{background:#143824;border-color:#2d8a59;color:#7bf0a7}
+  .btn.rec{background:#351722;border-color:#743044;color:#ff91a5}
+  .btn.rec.on{background:#4a0c18;border-color:#ff5c70;color:#ffdce2;box-shadow:0 0 12px rgba(255,92,112,.30)}
+  .recdot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#718096;margin-right:5px;vertical-align:middle}
+  .recdot.on{background:#ff3857;box-shadow:0 0 9px rgba(255,56,87,.75)}
   .page{padding:10px}
   .status{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px}
   .box{background:#121a26;border:1px solid #263448;border-radius:13px;padding:9px}
@@ -136,7 +140,7 @@ static const char PAGINA_HTML[] = R"ICNPHTML(
 <div class="top">
   <div>
     <div class="titulo">Professor ICNP - Monitoramento PPG</div>
-    <div class="sub">Tendencias de FC e SpO2 e onda PPG do pulso recebidas pelo protocolo ICNP.</div>
+    <div class="sub">Tendencias de FC, SpO2, PA estimada e onda PPG do pulso recebidas pelo protocolo ICNP.</div>
   </div>
 
   <div>
@@ -146,13 +150,17 @@ static const char PAGINA_HTML[] = R"ICNPHTML(
     <button class="btn" id="b3" onclick="setCols(3)">3</button>
     <button class="btn" id="b4" onclick="setCols(4)">4</button>
     <button class="btn" onclick="full()">Tela cheia</button>
+    <button class="btn rec" id="recBtn" onclick="recToggle()">Gravar</button>
+    <button class="btn" id="recGerarBtn" onclick="recGerarDados()" disabled>Exportar</button>
+    <button class="btn" id="recLimparBtn" onclick="recLimpar()" disabled>Limpar</button>
+    <span class="sub" id="recStatus"><span class="recdot" id="recDot"></span>REC parado</span>
   </div>
 </div>
 
 <div class="page">
   <div id="status"></div>
   <div id="monitores" class="monitores cols-2"></div>
-  <div class="rodape">A onda PPG do pulso representa o sinal optico do sensor. FC e SpO2 sao tendencias calculadas, nao ECG nem validacao clinica.</div>
+  <div class="rodape">A onda PPG do pulso representa o sinal optico do sensor. FC, SpO2 e PA sao estimativas experimentais; nao representam ECG, diagnostico ou validacao clinica.</div>
 </div>
 
 <script>
@@ -164,8 +172,825 @@ let ultimoFrameDesenho=0;
 
 const JANELA_MS=60000;
 const PASSO_TEMPO_MS=5000;
-const INTERVALO_API_MS=1000;
+const INTERVALO_API_MS=500;
 const INTERVALO_DESENHO_MS=120;
+const PPG_RECENTE_MS_EXPORT=4500;
+const REC_MAX_AMOSTRAS=7200;
+
+let gravacao={
+  ativa:false,
+  inicioTs:0,
+  fimTs:0,
+  inicioIso:'',
+  fimIso:'',
+  amostras:[],
+  ultimaAtualizacaoUi:0
+};
+
+function recDuracaoMs(){
+  if(gravacao.ativa) return Date.now()-gravacao.inicioTs;
+  if(gravacao.inicioTs && gravacao.fimTs) return gravacao.fimTs-gravacao.inicioTs;
+  return 0;
+}
+
+function recTempoHumano(ms){
+  ms=Math.max(0,Number(ms)||0);
+  let s=Math.floor(ms/1000);
+  let m=Math.floor(s/60);
+  s=s%60;
+  return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+}
+
+function recAtualizarUi(){
+  let btn=document.getElementById('recBtn');
+  let gerar=document.getElementById('recGerarBtn');
+  let limpar=document.getElementById('recLimparBtn');
+  let status=document.getElementById('recStatus');
+  let dot=document.getElementById('recDot');
+
+  if(btn){
+    btn.classList.toggle('on',gravacao.ativa);
+    btn.textContent=gravacao.ativa?'Parar e exportar':'Gravar';
+  }
+
+  if(gerar) gerar.disabled=gravacao.amostras.length===0;
+  if(limpar) limpar.disabled=gravacao.amostras.length===0 && !gravacao.ativa;
+  if(dot) dot.classList.toggle('on',gravacao.ativa);
+
+  if(status){
+    let dur=recTempoHumano(recDuracaoMs());
+    let qtd=gravacao.amostras.length;
+    status.innerHTML='<span class="recdot '+(gravacao.ativa?'on':'')+'"></span>'+
+      (gravacao.ativa?'REC gravando ':'REC parado ')+dur+' | '+qtd+' amostras';
+  }
+}
+
+function recToggle(){
+  if(gravacao.ativa){
+    recParar();
+    recGerarDados();
+    return;
+  }
+  recIniciar();
+}
+
+function recIniciar(){
+  gravacao.ativa=true;
+  gravacao.inicioTs=Date.now();
+  gravacao.fimTs=0;
+  gravacao.inicioIso=new Date(gravacao.inicioTs).toISOString();
+  gravacao.fimIso='';
+  gravacao.amostras=[];
+  recAtualizarUi();
+}
+
+function recParar(){
+  if(!gravacao.ativa) return;
+  gravacao.ativa=false;
+  gravacao.fimTs=Date.now();
+  gravacao.fimIso=new Date(gravacao.fimTs).toISOString();
+  recAtualizarUi();
+}
+
+function recLimpar(){
+  gravacao.ativa=false;
+  gravacao.inicioTs=0;
+  gravacao.fimTs=0;
+  gravacao.inicioIso='';
+  gravacao.fimIso='';
+  gravacao.amostras=[];
+  recAtualizarUi();
+}
+
+function recValor(v){
+  return (v===undefined)?null:v;
+}
+
+function recCloneAluno(a){
+  if(!a) return null;
+
+  return {
+    ativo:!!a.ativo,
+    aluno:recValor(a.aluno),
+    seq:recValor(a.seq),
+    ciclo:recValor(a.ciclo),
+    fc:recValor(a.fc),
+    spo2:recValor(a.spo2),
+    ir:recValor(a.ir),
+    red:recValor(a.red),
+    dedo:recValor(a.dedo),
+    qual:recValor(a.qual),
+    rssi:recValor(a.rssi),
+    snr:recValor(a.snr),
+    bat_aluno:recValor(a.bat_aluno),
+    energia_professor:recValor(a.energia_professor),
+    ack:recValor(a.ack),
+    idade_ms:recValor(a.idade_ms),
+    tempo_ms:recValor(a.tempo_ms),
+    ppg_n:recValor(a.ppg_n),
+    ppg_idade_ms:recValor(a.ppg_idade_ms),
+    ppg_tempo_ms:recValor(a.ppg_tempo_ms),
+    ppg:Array.isArray(a.ppg)?a.ppg.slice():[]
+  };
+}
+
+function recRegistrar(d){
+  if(!gravacao.ativa || !d) return;
+
+  let agora=Date.now();
+  let alunos=Array.isArray(d.alunos)?d.alunos.map(recCloneAluno).filter(Boolean):[];
+
+  gravacao.amostras.push({
+    idx:gravacao.amostras.length+1,
+    t_ms:agora-gravacao.inicioTs,
+    iso:new Date(agora).toISOString(),
+    sistema:recValor(d.sistema),
+    wifi:recValor(d.wifi),
+    ip:recValor(d.ip),
+    alunos:alunos
+  });
+
+  while(gravacao.amostras.length>REC_MAX_AMOSTRAS){
+    gravacao.amostras.shift();
+  }
+
+  if(agora-gravacao.ultimaAtualizacaoUi>500){
+    gravacao.ultimaAtualizacaoUi=agora;
+    recAtualizarUi();
+  }
+}
+
+function recNomeBase(){
+  let d=new Date(gravacao.inicioTs || Date.now());
+  let pad=n=>String(n).padStart(2,'0');
+  return 'icnp_gravacao_'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'_'+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds());
+}
+
+function recMontarJson(){
+  return {
+    tipo:'ICNP_API_GRAVACAO',
+    versao:'API_ORIGINAL_EXPORT_BROWSER_V1',
+    inicio_iso:gravacao.inicioIso,
+    fim_iso:gravacao.fimIso || (gravacao.ativa?new Date().toISOString():''),
+    duracao_ms:recDuracaoMs(),
+    intervalo_api_ms:INTERVALO_API_MS,
+    ppg_recente_ms_referencia:PPG_RECENTE_MS_EXPORT,
+    total_amostras:gravacao.amostras.length,
+    observacao:'Registro gerado no navegador da API do Professor. FC/SpO2 sao estimativas experimentais; nao usar como validacao clinica.',
+    amostras:gravacao.amostras
+  };
+}
+
+function recCsvEscape(v){
+  if(v===null||v===undefined) return 'NA';
+  let s=String(v);
+  if(s.indexOf(';')>=0 || s.indexOf('"')>=0 || s.indexOf('\n')>=0 || s.indexOf('\r')>=0){
+    s='"'+s.replace(/"/g,'""')+'"';
+  }
+  return s;
+}
+
+function recLinhas(){
+  let linhas=[];
+
+  gravacao.amostras.forEach(am=>{
+    (am.alunos||[]).forEach(a=>{
+      let ppg=Array.isArray(a.ppg)?a.ppg:[];
+      linhas.push({
+        amostra:am.idx,
+        t_ms:am.t_ms,
+        iso:am.iso,
+        sistema:am.sistema,
+        wifi:am.wifi,
+        ip:am.ip,
+        aluno:a.aluno,
+        ativo:a.ativo?'SIM':'NAO',
+        seq:a.seq,
+        ciclo:a.ciclo,
+        fc:a.fc,
+        spo2:a.spo2,
+        sys:a.sys,
+        dia:a.dia,
+        pa_est:a.pa_est,
+        uso:a.uso,
+        sinal_ppg:a.sinal_ppg,
+        pa_valida:a.pa_valida,
+        movimento:a.movimento,
+        artefato_ppg:a.artefato_ppg,
+        ir:a.ir,
+        red:a.red,
+        dedo:a.dedo,
+        qual:a.qual,
+        rssi:a.rssi,
+        snr:a.snr,
+        bat_aluno:a.bat_aluno,
+        energia_professor:a.energia_professor,
+        ack:a.ack,
+        idade_ms:a.idade_ms,
+        tempo_ms:a.tempo_ms,
+        ppg_n:a.ppg_n,
+        ppg_idade_ms:a.ppg_idade_ms,
+        ppg_tempo_ms:a.ppg_tempo_ms,
+        ppg_primeiros_16:ppg.slice(0,16).join(','),
+        ppg_todos:ppg.join(',')
+      });
+    });
+  });
+
+  return linhas;
+}
+
+function recMontarCsv(){
+  let campos=['amostra','t_ms','iso','sistema','wifi','ip','aluno','ativo','seq','ciclo','fc','spo2','sys','dia','pa_est','uso','sinal_ppg','pa_valida','movimento','artefato_ppg','ir','red','dedo','qual','rssi','snr','bat_aluno','energia_professor','ack','idade_ms','tempo_ms','ppg_n','ppg_idade_ms','ppg_tempo_ms','ppg_primeiros_16','ppg_todos'];
+  let linhas=[campos.join(';')];
+
+  recLinhas().forEach(l=>{
+    linhas.push(campos.map(c=>recCsvEscape(l[c])).join(';'));
+  });
+
+  return linhas.join('\n');
+}
+
+function recMontarTxt(){
+  let saida=[];
+  saida.push('ICNP_GRAVACAO_TXT');
+  saida.push('inicio_iso='+recCsvEscape(gravacao.inicioIso));
+  saida.push('fim_iso='+recCsvEscape(gravacao.fimIso || (gravacao.ativa?new Date().toISOString():'')));
+  saida.push('duracao_ms='+recDuracaoMs());
+  saida.push('total_amostras='+gravacao.amostras.length);
+  saida.push('formato=uma linha por aluno por amostra; campos separados por ponto e virgula; sem JSON');
+  saida.push('');
+
+  recLinhas().forEach(l=>{
+    saida.push(
+      'amostra='+recCsvEscape(l.amostra)+';'+
+      't_ms='+recCsvEscape(l.t_ms)+';'+
+      'iso='+recCsvEscape(l.iso)+';'+
+      'aluno='+recCsvEscape(l.aluno)+';'+
+      'ativo='+recCsvEscape(l.ativo)+';'+
+      'seq='+recCsvEscape(l.seq)+';'+
+      'ciclo='+recCsvEscape(l.ciclo)+';'+
+      'fc='+recCsvEscape(l.fc)+';'+
+      'spo2='+recCsvEscape(l.spo2)+';'+
+      'sys='+recCsvEscape(l.sys)+';'+
+      'dia='+recCsvEscape(l.dia)+';'+
+      'pa_est='+recCsvEscape(l.pa_est)+';'+
+      'uso='+recCsvEscape(l.uso)+';'+
+      'sinal_ppg='+recCsvEscape(l.sinal_ppg)+';'+
+      'pa_valida='+recCsvEscape(l.pa_valida)+';'+
+      'movimento='+recCsvEscape(l.movimento)+';'+
+      'artefato_ppg='+recCsvEscape(l.artefato_ppg)+';'+
+      'ir='+recCsvEscape(l.ir)+';'+
+      'red='+recCsvEscape(l.red)+';'+
+      'dedo='+recCsvEscape(l.dedo)+';'+
+      'qual='+recCsvEscape(l.qual)+';'+
+      'rssi='+recCsvEscape(l.rssi)+';'+
+      'snr='+recCsvEscape(l.snr)+';'+
+      'bat_aluno='+recCsvEscape(l.bat_aluno)+';'+
+      'energia_professor='+recCsvEscape(l.energia_professor)+';'+
+      'ack='+recCsvEscape(l.ack)+';'+
+      'idade_ms='+recCsvEscape(l.idade_ms)+';'+
+      'ppg_n='+recCsvEscape(l.ppg_n)+';'+
+      'ppg_idade_ms='+recCsvEscape(l.ppg_idade_ms)+';'+
+      'ppg_primeiros_16='+recCsvEscape(l.ppg_primeiros_16)
+    );
+  });
+
+  return saida.join('\n');
+}
+
+function recHtmlEscape(v){
+  if(v===null||v===undefined) return 'NA';
+  return String(v)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function recNumeroValido(v){
+  return v!==null && v!==undefined && v!=='' && !isNaN(Number(v));
+}
+
+function recGraficoImagem(linhas,aluno,campo,titulo,unidade,minY,maxY){
+  let dados=linhas.filter(l=>String(l.aluno)===String(aluno) && recNumeroValido(l[campo]));
+  let c=document.createElement('canvas');
+  c.width=900;
+  c.height=260;
+  let x=c.getContext('2d');
+  let L=58,T=28,R=22,B=42;
+  let W=c.width,H=c.height;
+  let PW=W-L-R,PH=H-T-B;
+
+  x.fillStyle='#ffffff';
+  x.fillRect(0,0,W,H);
+  x.fillStyle='#111827';
+  x.font='bold 18px Arial';
+  x.textAlign='left';
+  x.fillText(titulo+' - Aluno '+aluno,18,20);
+  x.strokeStyle='#d1d5db';
+  x.lineWidth=1;
+  x.strokeRect(L,T,PW,PH);
+  x.fillStyle='#374151';
+  x.font='11px Arial';
+  x.textAlign='right';
+
+  for(let i=0;i<=4;i++){
+    let val=maxY-(maxY-minY)*i/4;
+    let y=T+PH*i/4;
+    x.strokeStyle='#e5e7eb';
+    x.beginPath();
+    x.moveTo(L,y);
+    x.lineTo(L+PW,y);
+    x.stroke();
+    x.fillStyle='#374151';
+    x.fillText(String(Math.round(val)),L-6,y+4);
+  }
+
+  if(dados.length<2){
+    x.textAlign='center';
+    x.fillStyle='#6b7280';
+    x.font='16px Arial';
+    x.fillText('Sem dados suficientes',W/2,H/2);
+    return c.toDataURL('image/png');
+  }
+
+  let t0=Number(dados[0].t_ms)||0;
+  let t1=Number(dados[dados.length-1].t_ms)||1;
+  if(t1<=t0) t1=t0+1;
+
+  x.strokeStyle='#2563eb';
+  x.lineWidth=3;
+  x.lineJoin='round';
+  x.lineCap='round';
+  x.beginPath();
+
+  dados.forEach((d,i)=>{
+    let val=Math.max(minY,Math.min(maxY,Number(d[campo])));
+    let xx=L+((Number(d.t_ms)-t0)/(t1-t0))*PW;
+    let yy=T+PH-((val-minY)/(maxY-minY))*PH;
+    if(i===0) x.moveTo(xx,yy);
+    else x.lineTo(xx,yy);
+  });
+
+  x.stroke();
+
+  let ultimo=dados[dados.length-1];
+  let uv=Number(ultimo[campo]);
+  let ux=L+((Number(ultimo.t_ms)-t0)/(t1-t0))*PW;
+  let uy=T+PH-((Math.max(minY,Math.min(maxY,uv))-minY)/(maxY-minY))*PH;
+  x.fillStyle='#dc2626';
+  x.beginPath();
+  x.arc(ux,uy,5,0,Math.PI*2);
+  x.fill();
+
+  x.fillStyle='#111827';
+  x.font='12px Arial';
+  x.textAlign='right';
+  x.fillText('Atual: '+uv+' '+unidade,W-20,22);
+  x.fillText('Tempo relativo (ms)',L+PW,T+PH+30);
+
+  return c.toDataURL('image/png');
+}
+
+
+function recDadosGrafico(linhas,aluno,campo){
+  return linhas.filter(l=>String(l.aluno)===String(aluno) && recNumeroValido(l[campo]));
+}
+
+function recAlunoAtivoNaGravacao(linhas,aluno){
+  return linhas.some(l=>String(l.aluno)===String(aluno) && String(l.ativo)==='SIM');
+}
+
+function recAlunoTemSerieValida(linhas,aluno,campo,minPontos=2){
+  return recDadosGrafico(linhas,aluno,campo).length>=minPontos;
+}
+
+function recAlunoElegivelGraficos(linhas,aluno){
+  return recAlunoAtivoNaGravacao(linhas,aluno) ||
+         recAlunoTemSerieValida(linhas,aluno,'fc',2) ||
+         recAlunoTemSerieValida(linhas,aluno,'spo2',2) ||
+         recAlunoTemSerieValida(linhas,aluno,'bat_aluno',2);
+}
+
+function recListaAlunosGraficos(linhas){
+  return [...new Set(linhas.map(l=>l.aluno).filter(v=>v!==null&&v!==undefined))]
+    .filter(aluno=>recAlunoElegivelGraficos(linhas,aluno))
+    .sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true,sensitivity:'base'}));
+}
+
+function recDesenharGraficoRetangulo(ctx,dados,left,top,width,height,titulo,unidade,minY,maxY,corLinha){
+  let padL=42,padT=24,padR=10,padB=26;
+  let px=left+padL, py=top+padT;
+  let pw=Math.max(10,width-padL-padR), ph=Math.max(10,height-padT-padB);
+
+  ctx.fillStyle='#ffffff';
+  ctx.fillRect(left,top,width,height);
+  ctx.strokeStyle='#d1d5db';
+  ctx.lineWidth=1;
+  ctx.strokeRect(left,top,width,height);
+
+  ctx.fillStyle='#111827';
+  ctx.font='bold 14px Arial';
+  ctx.textAlign='left';
+  ctx.fillText(titulo,left+10,top+16);
+
+  for(let i=0;i<=4;i++){
+    let val=maxY-(maxY-minY)*i/4;
+    let y=py+ph*i/4;
+    ctx.strokeStyle='#e5e7eb';
+    ctx.beginPath();
+    ctx.moveTo(px,y);
+    ctx.lineTo(px+pw,y);
+    ctx.stroke();
+    ctx.fillStyle='#4b5563';
+    ctx.font='10px Arial';
+    ctx.textAlign='right';
+    ctx.fillText(String(Math.round(val*10)/10),px-4,y+3);
+  }
+
+  if(dados.length<2){
+    ctx.textAlign='center';
+    ctx.fillStyle='#6b7280';
+    ctx.font='12px Arial';
+    ctx.fillText('Sem dados suficientes',left+width/2,top+height/2);
+    return;
+  }
+
+  let t0=Number(dados[0].t_ms)||0;
+  let t1=Number(dados[dados.length-1].t_ms)||1;
+  if(t1<=t0) t1=t0+1;
+
+  ctx.strokeStyle=corLinha||'#2563eb';
+  ctx.lineWidth=2;
+  ctx.lineJoin='round';
+  ctx.lineCap='round';
+  ctx.beginPath();
+
+  dados.forEach((d,i)=>{
+    let val=Math.max(minY,Math.min(maxY,Number(d.valor)));
+    let xx=px+((Number(d.t_ms)-t0)/(t1-t0))*pw;
+    let yy=py+ph-((val-minY)/(maxY-minY))*ph;
+    if(i===0) ctx.moveTo(xx,yy);
+    else ctx.lineTo(xx,yy);
+  });
+  ctx.stroke();
+
+  let ultimo=dados[dados.length-1];
+  let uv=Number(ultimo.valor);
+  let ux=px+((Number(ultimo.t_ms)-t0)/(t1-t0))*pw;
+  let uy=py+ph-((Math.max(minY,Math.min(maxY,uv))-minY)/(maxY-minY))*ph;
+  ctx.fillStyle='#dc2626';
+  ctx.beginPath();
+  ctx.arc(ux,uy,4,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle='#111827';
+  ctx.font='11px Arial';
+  ctx.textAlign='right';
+  ctx.fillText('Atual: '+(Math.round(uv*10)/10)+' '+unidade,left+width-8,top+16);
+}
+
+function recGraficoImagemTamanho(linhas,aluno,campo,titulo,unidade,minY,maxY,largura,altura){
+  let dados=recDadosGrafico(linhas,aluno,campo).map(d=>({t_ms:d.t_ms,valor:Number(d[campo])}));
+  let c=document.createElement('canvas');
+  c.width=largura||900;
+  c.height=altura||260;
+  let ctx=c.getContext('2d');
+  recDesenharGraficoRetangulo(ctx,dados,0,0,c.width,c.height,titulo+' - Aluno '+aluno,unidade,minY,maxY,'#2563eb');
+  return c.toDataURL('image/png');
+}
+
+function recMontarPainelGraficosDataUri(){
+  let linhas=recLinhas();
+  let alunos=recListaAlunosGraficos(linhas);
+  if(alunos.length===0) return null;
+
+  let marg=32;
+  let chartW=332;
+  let chartH=180;
+  let gap=14;
+  let largura=(marg*2)+(chartW*3)+(gap*2);
+  let cabH=72;
+  let tituloAlunoH=34;
+  let blocoGap=22;
+  let blocoH=tituloAlunoH+chartH+blocoGap;
+  let altura=cabH+(alunos.length*blocoH)+marg;
+
+  let c=document.createElement('canvas');
+  c.width=largura;
+  c.height=altura;
+  let ctx=c.getContext('2d');
+
+  ctx.fillStyle='#ffffff';
+  ctx.fillRect(0,0,largura,altura);
+
+  ctx.fillStyle='#111827';
+  ctx.font='bold 22px Arial';
+  ctx.textAlign='left';
+  ctx.textBaseline='alphabetic';
+  ctx.fillText('Gravacao ICNP - Graficos por no ativo',marg,34);
+  ctx.font='12px Arial';
+  ctx.fillStyle='#374151';
+  ctx.fillText('Inicio: '+String(gravacao.inicioIso||''),marg,54);
+  ctx.fillText('Duracao: '+String(recDuracaoMs())+' ms | Amostras API: '+String(gravacao.amostras.length),marg+400,54);
+
+  alunos.forEach((aluno,idx)=>{
+    let y=cabH+(idx*blocoH);
+    let chartsTop=y+tituloAlunoH;
+    let blocoTop=y-4;
+    let blocoHeight=tituloAlunoH+chartH+8;
+
+    if(idx>0){
+      ctx.strokeStyle='#e5e7eb';
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.moveTo(marg,y-12);
+      ctx.lineTo(largura-marg,y-12);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle='#ffffff';
+    ctx.fillRect(marg-8,blocoTop,largura-(marg*2)+16,blocoHeight);
+
+    ctx.fillStyle='#111827';
+    ctx.font='bold 18px Arial';
+    ctx.textAlign='left';
+    ctx.fillText('Aluno '+aluno,marg+6,y+22);
+
+    recDesenharGraficoRetangulo(
+      ctx,
+      recDadosGrafico(linhas,aluno,'fc').map(d=>({t_ms:d.t_ms,valor:Number(d.fc)})),
+      marg,chartsTop,chartW,chartH,'FC','bpm',40,180,'#2563eb'
+    );
+    recDesenharGraficoRetangulo(
+      ctx,
+      recDadosGrafico(linhas,aluno,'spo2').map(d=>({t_ms:d.t_ms,valor:Number(d.spo2)})),
+      marg+chartW+gap,chartsTop,chartW,chartH,'SpO2','%',80,100,'#059669'
+    );
+    recDesenharGraficoRetangulo(
+      ctx,
+      recDadosGrafico(linhas,aluno,'bat_aluno').map(d=>({t_ms:d.t_ms,valor:Number(d.bat_aluno)})),
+      marg+((chartW+gap)*2),chartsTop,chartW,chartH,'Bateria','V',3.0,4.3,'#d97706'
+    );
+  });
+
+  return c.toDataURL('image/png');
+}
+
+function recDataUriParaBlob(uri,tipo){
+  if(!uri) return null;
+  return new Blob([recB64ParaBytes(recDataUriBase64(uri))],{type:tipo||'image/png'});
+}
+
+function recMontarPainelGraficosBlob(){
+  let uri=recMontarPainelGraficosDataUri();
+  return uri?recDataUriParaBlob(uri,'image/png'):null;
+}
+
+function recDataUriBase64(uri){
+  let s=String(uri||'');
+  let p=s.indexOf(',');
+  return p>=0?s.substring(p+1):s;
+}
+
+function recB64ParaBytes(b64){
+  let bin=atob(String(b64||'').replace(/\s/g,''));
+  let arr=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return arr;
+}
+
+function recXmlEscape(v){
+  return String(v===null||v===undefined?'':v)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function recColunaExcel(n){
+  let s='';
+  n++;
+  while(n>0){
+    let m=(n-1)%26;
+    s=String.fromCharCode(65+m)+s;
+    n=Math.floor((n-1)/26);
+  }
+  return s;
+}
+
+function recValorNumericoExcel(v){
+  if(v===null||v===undefined||v==='') return null;
+  if(String(v).toUpperCase()==='NA') return null;
+  let n=Number(v);
+  return Number.isFinite(n)?n:null;
+}
+
+function recCelulaXlsx(c,r,v){
+  let ref=recColunaExcel(c)+r;
+  let n=recValorNumericoExcel(v);
+  if(n!==null && String(v).trim()!=='' && !String(v).includes('T')){
+    return '<c r="'+ref+'"><v>'+String(n)+'</v></c>';
+  }
+  return '<c r="'+ref+'" t="inlineStr"><is><t>'+recXmlEscape(v)+'</t></is></c>';
+}
+
+function recLinhaXlsx(r,vals){
+  let xml='<row r="'+r+'">';
+  vals.forEach((v,c)=>{xml+=recCelulaXlsx(c,r,v);});
+  xml+='</row>';
+  return xml;
+}
+
+function recCrc32Tabela(){
+  let t=[];
+  for(let n=0;n<256;n++){
+    let c=n;
+    for(let k=0;k<8;k++) c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);
+    t[n]=c>>>0;
+  }
+  return t;
+}
+
+const REC_CRC32_TABELA=recCrc32Tabela();
+
+function recCrc32(bytes){
+  let c=0xffffffff;
+  for(let i=0;i<bytes.length;i++) c=REC_CRC32_TABELA[(c^bytes[i])&0xff]^(c>>>8);
+  return (c^0xffffffff)>>>0;
+}
+
+function recU16(v){
+  let b=new Uint8Array(2);
+  let d=new DataView(b.buffer);
+  d.setUint16(0,v,true);
+  return b;
+}
+
+function recU32(v){
+  let b=new Uint8Array(4);
+  let d=new DataView(b.buffer);
+  d.setUint32(0,v>>>0,true);
+  return b;
+}
+
+function recConcat(partes){
+  let total=0;
+  partes.forEach(p=>{total+=p.length;});
+  let out=new Uint8Array(total);
+  let off=0;
+  partes.forEach(p=>{out.set(p,off);off+=p.length;});
+  return out;
+}
+
+function recBytesTexto(s){
+  return new TextEncoder().encode(String(s));
+}
+
+function recZipCriar(arquivos){
+  let locais=[];
+  let centrais=[];
+  let offset=0;
+
+  arquivos.forEach(arq=>{
+    let nome=recBytesTexto(arq.nome);
+    let dados=arq.dados instanceof Uint8Array?arq.dados:recBytesTexto(arq.dados);
+    let crc=recCrc32(dados);
+
+    let local=recConcat([
+      recU32(0x04034b50),recU16(20),recU16(0),recU16(0),recU16(0),recU16(0),
+      recU32(crc),recU32(dados.length),recU32(dados.length),recU16(nome.length),recU16(0),nome,dados
+    ]);
+    locais.push(local);
+
+    let central=recConcat([
+      recU32(0x02014b50),recU16(20),recU16(20),recU16(0),recU16(0),recU16(0),recU16(0),
+      recU32(crc),recU32(dados.length),recU32(dados.length),recU16(nome.length),recU16(0),recU16(0),
+      recU16(0),recU16(0),recU32(0),recU32(offset),nome
+    ]);
+    centrais.push(central);
+    offset+=local.length;
+  });
+
+  let centralInicio=offset;
+  let centralBytes=recConcat(centrais);
+  let fim=recConcat([
+    recU32(0x06054b50),recU16(0),recU16(0),recU16(arquivos.length),recU16(arquivos.length),
+    recU32(centralBytes.length),recU32(centralInicio),recU16(0)
+  ]);
+  return recConcat([...locais,centralBytes,fim]);
+}
+
+function recMontarXlsxBlob(){
+  let linhas=recLinhas();
+  let alunos=recListaAlunosGraficos(linhas);
+  let campos=['amostra','t_ms','iso','aluno','ativo','seq','ciclo','fc','spo2','sys','dia','pa_est','uso','sinal_ppg','pa_valida','movimento','artefato_ppg','ir','red','dedo','qual','rssi','snr','bat_aluno','energia_professor','ack','idade_ms','ppg_n','ppg_idade_ms','ppg_primeiros_16'];
+
+  let imagens=[];
+  alunos.forEach(aluno=>{
+    imagens.push({aluno:aluno,tipo:'FC',nome:'grafico_aluno_'+aluno+'_fc.png',b64:recDataUriBase64(recGraficoImagemTamanho(linhas,aluno,'fc','Frequencia cardiaca','bpm',40,180,900,240))});
+    imagens.push({aluno:aluno,tipo:'SpO2',nome:'grafico_aluno_'+aluno+'_spo2.png',b64:recDataUriBase64(recGraficoImagemTamanho(linhas,aluno,'spo2','SpO2','%',80,100,900,240))});
+    imagens.push({aluno:aluno,tipo:'Bateria',nome:'grafico_aluno_'+aluno+'_bateria.png',b64:recDataUriBase64(recGraficoImagemTamanho(linhas,aluno,'bat_aluno','Bateria do aluno','V',3.0,4.3,900,240))});
+  });
+
+  let linhasResumo=[];
+  linhasResumo.push(['Gravacao ICNP - API do Professor']);
+  linhasResumo.push(['Arquivo Excel XLSX real gerado no navegador. Graficos sao imagens estaticas incorporadas ao arquivo.']);
+  linhasResumo.push([]);
+  linhasResumo.push(['Inicio ISO',gravacao.inicioIso]);
+  linhasResumo.push(['Fim ISO',gravacao.fimIso || (gravacao.ativa?new Date().toISOString():'')]);
+  linhasResumo.push(['Duracao ms',recDuracaoMs()]);
+  linhasResumo.push(['Total de amostras API',gravacao.amostras.length]);
+  linhasResumo.push(['Observacao','FC, SpO2 e PA sao estimativas experimentais; nao representam diagnostico, medicao clinica ou validacao clinica.']);
+  linhasResumo.push([]);
+  linhasResumo.push(['Graficos incorporados abaixo']);
+
+  let sheet1Rows='';
+  linhasResumo.forEach((vals,i)=>{sheet1Rows+=recLinhaXlsx(i+1,vals);});
+  let sheet1='<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+
+    '<cols><col min="1" max="1" width="26" customWidth="1"/><col min="2" max="12" width="16" customWidth="1"/></cols>'+
+    '<sheetData>'+sheet1Rows+'</sheetData><drawing r:id="rId1"/></worksheet>';
+
+  let dadosRows=recLinhaXlsx(1,campos);
+  linhas.forEach((l,i)=>{
+    dadosRows+=recLinhaXlsx(i+2,campos.map(c=>l[c]));
+  });
+  let sheet2='<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+
+    '<cols><col min="1" max="22" width="15" customWidth="1"/></cols><sheetData>'+dadosRows+'</sheetData></worksheet>';
+
+  let anchors='';
+  let drawingRels='';
+  imagens.forEach((img,i)=>{
+    let id=i+1;
+    let linhaBase=10+i*15;
+    anchors+='<xdr:twoCellAnchor editAs="oneCell">'+
+      '<xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>'+linhaBase+'</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'+
+      '<xdr:to><xdr:col>12</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>'+(linhaBase+13)+'</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>'+
+      '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="'+id+'" name="Aluno '+recXmlEscape(img.aluno)+' - '+recXmlEscape(img.tipo)+'"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'+
+      '<xdr:blipFill><a:blip r:embed="rId'+id+'"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'+
+      '<xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor>';
+    drawingRels+='<Relationship Id="rId'+id+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image'+id+'.png"/>';
+  });
+
+  let drawing='<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+anchors+'</xdr:wsDr>';
+
+  let arquivos=[];
+  arquivos.push({nome:'[Content_Types].xml',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'});
+  arquivos.push({nome:'_rels/.rels',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'});
+  arquivos.push({nome:'xl/workbook.xml',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Resumo" sheetId="1" r:id="rId1"/><sheet name="Dados" sheetId="2" r:id="rId2"/></sheets></workbook>'});
+  arquivos.push({nome:'xl/_rels/workbook.xml.rels',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'});
+  arquivos.push({nome:'xl/styles.xml',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Arial"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>'});
+  arquivos.push({nome:'xl/worksheets/sheet1.xml',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+sheet1});
+  arquivos.push({nome:'xl/worksheets/sheet2.xml',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+sheet2});
+  arquivos.push({nome:'xl/worksheets/_rels/sheet1.xml.rels',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>'});
+  arquivos.push({nome:'xl/drawings/drawing1.xml',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+drawing});
+  arquivos.push({nome:'xl/drawings/_rels/drawing1.xml.rels',dados:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+drawingRels+'</Relationships>'});
+  imagens.forEach((img,i)=>{
+    arquivos.push({nome:'xl/media/image'+(i+1)+'.png',dados:recB64ParaBytes(img.b64)});
+  });
+
+  let zipBytes=recZipCriar(arquivos);
+  return new Blob([zipBytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+
+function recBaixar(nome,conteudo,tipo){
+  let blob=new Blob([conteudo],{type:tipo});
+  recBaixarBlob(nome,blob);
+}
+
+function recBaixarBlob(nome,blob){
+  let url=URL.createObjectURL(blob);
+  let a=document.createElement('a');
+  a.href=url;
+  a.download=nome;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
+function recGerarDados(){
+  if(gravacao.ativa) recParar();
+
+  if(gravacao.amostras.length===0){
+    alert('Nenhuma amostra gravada. Clique em Gravar antes de exportar.');
+    recAtualizarUi();
+    return;
+  }
+
+  let base=recNomeBase();
+  let txt=recMontarTxt();
+  let xlsx=recMontarXlsxBlob();
+  let painelGraficos=recMontarPainelGraficosBlob();
+
+  recBaixar(base+'.txt',txt,'text/plain;charset=utf-8');
+  setTimeout(()=>recBaixarBlob(base+'.xlsx',xlsx),300);
+  if(painelGraficos){
+    setTimeout(()=>recBaixarBlob(base+'_graficos.png',painelGraficos),650);
+  }
+  recAtualizarUi();
+}
 
 function H(id){
   if(!hist[id]){
@@ -195,6 +1020,15 @@ function limparEsteiraPpg(id){
   h.ppgSemContato=true;
 }
 
+function movimentoRotulo(v){
+  if(v==='PULANDO_IMPACTO') return 'PULANDO_IMPACTO';
+  if(v==='IMPACTO_VERTICAL') return 'PULANDO_IMPACTO';
+  if(v==='ANDANDO') return 'ANDANDO';
+  if(v==='MOV_LEVE') return 'MOV_LEVE / MOVIMENTO ALEATORIO';
+  if(v==='MOV_APOIADO') return 'MOV_APOIADO / SENTADO';
+  return v;
+}
+
 function t(v,s=''){
   return (v===null||v===undefined)?'NA':String(v)+s;
 }
@@ -214,15 +1048,24 @@ function horaDeTimestamp(ts){
 }
 
 function okBase(a){
-  return a && a.ativo===true && a.dedo===1 && a.qual==='OK';
+  return a && a.ativo===true && a.dedo===1;
+}
+
+function okFisio(a){
+  return okBase(a) && Number(a.pa_valida)===1 && a.qual==='OK';
 }
 
 function okFc(a){
-  return okBase(a) && a.fc!==null && a.fc!==undefined && Number(a.fc)>0;
+  return okFisio(a) && a.fc!==null && a.fc!==undefined && Number(a.fc)>0;
 }
 
 function okSpo2(a){
-  return okBase(a) && a.spo2!==null && a.spo2!==undefined && Number(a.spo2)>0;
+  return okFisio(a) && a.spo2!==null && a.spo2!==undefined && Number(a.spo2)>0;
+}
+
+function okPa(a){
+  return okFisio(a) && a.sys!==null && a.sys!==undefined && Number(a.sys)>0 &&
+         a.dia!==null && a.dia!==undefined && Number(a.dia)>0;
 }
 
 function okBat(a){
@@ -370,6 +1213,7 @@ function card(a){
 
   let fc=okFc(a)?a.fc:'NA';
   let sp=okSpo2(a)?a.spo2:'NA';
+  let pa=okPa(a)?(a.sys+'x'+a.dia):'NA';
 
   let corFcGrande=okFc(a)?corFCValor(a.fc):'#718096';
   let corSpGrande=okSpo2(a)?corSpO2Valor(a.spo2):'#718096';
@@ -438,6 +1282,12 @@ function card(a){
           '<div class="box"><div class="k">Ativo</div><div class="v">'+(a.ativo?'SIM':'NAO')+'</div></div>'+
           '<div class="box"><div class="k">Dedo</div><div class="v">'+t(a.dedo)+'</div></div>'+
           '<div class="box"><div class="k">Qual</div><div class="v">'+t(a.qual)+'</div></div>'+
+          '<div class="box"><div class="k">PA Est.</div><div class="v">'+pa+' mmHg</div></div>'+
+          '<div class="box"><div class="k">Uso</div><div class="v">'+t(a.uso)+'</div></div>'+
+          '<div class="box"><div class="k">Sinal PPG</div><div class="v">'+t(a.sinal_ppg)+'</div></div>'+
+          '<div class="box"><div class="k">PA valida</div><div class="v">'+(Number(a.pa_valida)===1?'SIM':'NAO')+'</div></div>'+
+          '<div class="box"><div class="k">Movimento</div><div class="v">'+t(movimentoRotulo(a.movimento))+'</div></div>'+
+          '<div class="box"><div class="k">Artefato</div><div class="v">'+t(a.artefato_ppg)+'</div></div>'+
           '<div class="box"><div class="k">Ciclo/Seq</div><div class="v">'+t(a.ciclo)+'/'+t(a.seq)+'</div></div>'+
           '<div class="box"><div class="k">Bat Aluno</div><div class="v" style="color:'+corBatGrande+'">'+t(a.bat_aluno,' V')+'</div></div>'+
           '<div class="box"><div class="k">Energia Prof</div><div class="v">'+t(a.energia_professor,' V')+'</div></div>'+
@@ -1036,6 +1886,7 @@ async function atualizar(){
     }
 
     estado=d;
+    recRegistrar(d);
 
     renderStatus(d);
 
@@ -1065,6 +1916,7 @@ window.addEventListener('resize',()=>setTimeout(drawAll,100));
 setInterval(atualizar,INTERVALO_API_MS);
 
 setCols(cols);
+recAtualizarUi();
 atualizar();
 </script>
 </body>
@@ -1290,6 +2142,8 @@ static void limparEstadoAluno(int i) {
   estadoAlunos[i].ciclo = -1;
   estadoAlunos[i].fc = -1;
   estadoAlunos[i].spo2 = -1;
+  estadoAlunos[i].sys = -1;
+  estadoAlunos[i].dia = -1;
   estadoAlunos[i].ir = -1;
   estadoAlunos[i].red = -1;
   estadoAlunos[i].ppg = "";
@@ -1297,6 +2151,11 @@ static void limparEstadoAluno(int i) {
   estadoAlunos[i].ppgMs = 0;
   estadoAlunos[i].dedo = -1;
   estadoAlunos[i].qual = "NA";
+  estadoAlunos[i].uso = "NA";
+  estadoAlunos[i].sinalPpg = "NA";
+  estadoAlunos[i].paValida = 0;
+  estadoAlunos[i].movimento = "NA";
+  estadoAlunos[i].artefatoPpg = "NA";
   estadoAlunos[i].rssi = 0;
   estadoAlunos[i].snr = 0.0f;
   estadoAlunos[i].batAluno = -1.0f;
@@ -1337,6 +2196,13 @@ static String jsonAluno(const EstadoAlunoAPI& e) {
   campoIntNA(json, primeiro, "ciclo", e.ciclo);
   campoIntNA(json, primeiro, "fc", e.fc);
   campoIntNA(json, primeiro, "spo2", e.spo2);
+  campoIntNA(json, primeiro, "sys", e.sys);
+  campoIntNA(json, primeiro, "dia", e.dia);
+  if (e.sys > 0 && e.dia > 0) {
+    campoTexto(json, primeiro, "pa_est", String(e.sys) + "x" + String(e.dia));
+  } else {
+    campoTexto(json, primeiro, "pa_est", "NA");
+  }
   campoLongNA(json, primeiro, "ir", e.ir);
   campoLongNA(json, primeiro, "red", e.red);
 
@@ -1360,6 +2226,11 @@ static String jsonAluno(const EstadoAlunoAPI& e) {
 
   campoIntNA(json, primeiro, "dedo", e.dedo);
   campoTexto(json, primeiro, "qual", e.qual);
+  campoTexto(json, primeiro, "uso", e.uso);
+  campoTexto(json, primeiro, "sinal_ppg", e.sinalPpg);
+  campoInt(json, primeiro, "pa_valida", e.paValida);
+  campoTexto(json, primeiro, "movimento", e.movimento);
+  campoTexto(json, primeiro, "artefato_ppg", e.artefatoPpg);
   campoInt(json, primeiro, "rssi", e.rssi);
   campoFloat(json, primeiro, "snr", e.snr, 2);
   campoFloatNA(json, primeiro, "bat_aluno", e.batAluno, 2);
@@ -2045,10 +2916,17 @@ void atualizarEstadoAlunoAPI(
   int ciclo,
   int fc,
   int spo2,
+  int sys,
+  int dia,
   long ir,
   long red,
   int dedo,
   const String& qual,
+  const String& uso,
+  const String& sinalPpg,
+  int paValida,
+  const String& movimento,
+  const String& artefatoPpg,
   int rssi,
   float snr,
   float batAluno,
@@ -2068,10 +2946,17 @@ void atualizarEstadoAlunoAPI(
     estadoAlunos[aluno].ciclo = ciclo;
     estadoAlunos[aluno].fc = fc;
     estadoAlunos[aluno].spo2 = spo2;
+    estadoAlunos[aluno].sys = sys;
+    estadoAlunos[aluno].dia = dia;
     estadoAlunos[aluno].ir = ir;
     estadoAlunos[aluno].red = red;
     estadoAlunos[aluno].dedo = dedo;
     estadoAlunos[aluno].qual = qual;
+    estadoAlunos[aluno].uso = uso;
+    estadoAlunos[aluno].sinalPpg = sinalPpg;
+    estadoAlunos[aluno].paValida = paValida;
+    estadoAlunos[aluno].movimento = movimento;
+    estadoAlunos[aluno].artefatoPpg = artefatoPpg;
     estadoAlunos[aluno].rssi = rssi;
     estadoAlunos[aluno].snr = snr;
     estadoAlunos[aluno].batAluno = batAluno;

@@ -12,6 +12,8 @@ struct EstadoAlunoAPI {
 
   int fc = -1;
   int spo2 = -1;
+  int sys = -1;
+  int dia = -1;
 
   long ir = -1;
   long red = -1;
@@ -22,6 +24,11 @@ struct EstadoAlunoAPI {
 
   int dedo = -1;
   String qual = "NA";
+  String uso = "NA";
+  String sinalPpg = "NA";
+  int paValida = 0;
+  String movimento = "NA";
+  String artefatoPpg = "NA";
 
   int rssi = 0;
   float snr = 0.0f;
@@ -42,10 +49,17 @@ void atualizarEstadoAlunoAPI(
   int ciclo,
   int fc,
   int spo2,
+  int sys,
+  int dia,
   long ir,
   long red,
   int dedo,
   const String& qual,
+  const String& uso,
+  const String& sinalPpg,
+  int paValida,
+  const String& movimento,
+  const String& artefatoPpg,
   int rssi,
   float snr,
   float batAluno,

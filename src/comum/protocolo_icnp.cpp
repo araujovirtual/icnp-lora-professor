@@ -25,7 +25,14 @@ String montarDataIcnp(
   long ir,
   long red,
   bool dedoDetectado,
-  const String &qualidade
+  const String &qualidade,
+  int pressaoSistolica,
+  int pressaoDiastolica,
+  const String &uso,
+  const String &sinalPpg,
+  bool paValida,
+  const String &movimento,
+  const String &artefatoPpg
 ) {
   String mensagem = "";
 
@@ -52,6 +59,20 @@ String montarDataIcnp(
   mensagem += dedoDetectado ? "1" : "0";
   mensagem += ";QUAL=";
   mensagem += qualidade;
+  mensagem += ";SYS=";
+  mensagem += String(pressaoSistolica);
+  mensagem += ";DIA=";
+  mensagem += String(pressaoDiastolica);
+  mensagem += ";USO=";
+  mensagem += uso;
+  mensagem += ";SINAL_PPG=";
+  mensagem += sinalPpg;
+  mensagem += ";PA_VALIDA=";
+  mensagem += paValida ? "1" : "0";
+  mensagem += ";MOV=";
+  mensagem += movimento;
+  mensagem += ";ARTEFATO=";
+  mensagem += artefatoPpg;
 
   return mensagem;
 }
