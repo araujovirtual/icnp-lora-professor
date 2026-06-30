@@ -596,27 +596,57 @@ ICNP;TIPO=DATA;ALUNO=1;SEQ=97;CICLO=97;FC=94;SPO2=97;BAT=3.98;IR=98231;RED=25410
 
 ## Estrutura do projeto
 
+Estrutura atual do diretório `src/`:
+
 ```text
-src/
-  comum/
-    bateria.cpp / bateria.h
-    display_oled.h
-    led_sync.cpp / led_sync.h
-    protocolo_icnp.cpp / protocolo_icnp.h
-    radio_lora.cpp / radio_lora.h
-    sensor_fisiologico.cpp / sensor_fisiologico.h
-
-  professor/
-    professor_main.cpp
-    api_professor.cpp / api_professor.h
-    config_wifi.cpp / config_wifi.h
-
-  aluno/
-    aluno_main.cpp
-
-platformio.ini
-README.md
+src
++---aluno
+|       aluno_main.cpp
+|
++---comum
+|       bateria.cpp
+|       bateria.h
+|       configuracao_lora.h
+|       display_oled.cpp
+|       display_oled.h
+|       led_sync.cpp
+|       led_sync.h
+|       protocolo_icnp.cpp
+|       protocolo_icnp.h
+|       radio_lora.cpp
+|       radio_lora.h
+|       sensor_fisiologico.cpp
+|       sensor_fisiologico.h
+|
+\---professor
+        api_professor.cpp
+        api_professor.h
+        config_wifi.cpp
+        config_wifi.h
+        i2c_scan.cpp.OK
+        professor_main.cpp
+        teste_sensores.cpp.OK
 ```
+
+Arquivos principais por função:
+
+| Arquivo | Função |
+|---|---|
+| `src/aluno/aluno_main.cpp` | Firmware do nó Aluno: recebe `BEACON`, coleta sensores, envia `DATA`, valida `ACK` e envia `PPG` opcional. |
+| `src/professor/professor_main.cpp` | Firmware do nó Professor: alterna Alunos, envia `BEACON`, recebe `DATA`, envia `ACK` e integra a API. |
+| `src/professor/api_professor.cpp/.h` | API HTTP local, painel em navegador/TV e endpoint JSON. |
+| `src/professor/config_wifi.cpp/.h` | Configuração Wi-Fi, modo station e fallback de configuração. |
+| `src/comum/configuracao_lora.h` | Parâmetros comuns da comunicação LoRa. |
+| `src/comum/radio_lora.cpp/.h` | Inicialização e envio/recepção LoRa. |
+| `src/comum/protocolo_icnp.cpp/.h` | Montagem e interpretação das mensagens ICNP. |
+| `src/comum/sensor_fisiologico.cpp/.h` | Aquisição PPG com MAX30102/MH-ET LIVE e estados operacionais do sensor. |
+| `src/comum/display_oled.cpp/.h` | Rotinas de visualização no OLED. |
+| `src/comum/bateria.cpp/.h` | Leitura e formatação da tensão operacional. |
+| `src/comum/led_sync.cpp/.h` | Sinalização visual de sincronismo/estado. |
+| `src/professor/i2c_scan.cpp.OK` | Código auxiliar preservado para diagnóstico de barramento I2C, fora da compilação principal. |
+| `src/professor/teste_sensores.cpp.OK` | Código auxiliar preservado para teste isolado de sensores, fora da compilação principal. |
+
+Os arquivos terminados em `.OK` foram mantidos como referência de bancada, mas não entram na compilação principal do PlatformIO porque a extensão não é `.cpp`.
 
 ---
 
