@@ -1,8 +1,32 @@
-# ICNP/LoRa Professor
+# ICNP/LoRa Professor-Aluno
 
-Guia prático para reproduzir uma bancada **Professor-Aluno** com comunicação **LoRa**, protocolo **ICNP**, sensor **MAX30102/MH-ET LIVE** e painel local em navegador/TV.
+Guia prático para reproduzir uma bancada **Professor-Aluno** com comunicação **LoRa**, protocolo **ICNP**, sensor **MAX30102/MH-ET LIVE**, camada inercial **MPU6050/GY-521** quando habilitada, display OLED e painel local em navegador/TV.
 
-> Projeto acadêmico e experimental. As leituras de FC e SpO2 são estimativas técnico-operacionais por PPG. Este projeto não é dispositivo médico, não realiza diagnóstico e não substitui equipamento clínico.
+> Projeto acadêmico e experimental. As leituras de FC e SpO2 são estimativas técnico-operacionais por PPG. Este projeto não é dispositivo médico, não realiza diagnóstico, não substitui equipamento clínico e não caracteriza validação fisiológica formal.
+
+---
+
+## Estado atual do projeto
+
+Este repositório acompanha a versão final da dissertação **Arquitetura vestível com comunicação LoRa, protocolo ICNP e visualização local para monitoramento fisiológico experimental de atletas**.
+
+A versão consolidada trata o sistema como uma **arquitetura vestível experimental**, e não como uma luva final obrigatória. A luva aparece apenas como suporte exploratório de bancada. O foco principal está na arquitetura Professor-Aluno, no protocolo ICNP, na telemetria LoRa, na aquisição PPG experimental, na camada inercial de movimento/postura, no painel local e na rastreabilidade dos ensaios.
+
+Principais pontos consolidados:
+
+- ciclo ICNP `BEACON -> DATA -> ACK`;
+- pacote complementar opcional `PPG` após ACK válido;
+- seleção de nós Aluno pelo campo `ALVO`;
+- operação com dois nós Aluno físicos nos ensaios documentados;
+- aquisição PPG com MAX30102/MH-ET LIVE;
+- estimativas experimentais de FC e SpO2;
+- campos auxiliares sintéticos para testar extensibilidade do payload;
+- estados derivados de movimento/postura e artefato por MPU6050/GY-521, quando presentes no firmware final;
+- painel local no nó Professor por API HTTP;
+- modo Wi-Fi station e fallback de configuração;
+- exportação operacional de registros em TXT, XLSX e PNG;
+- alimentação estabilizada do nó Aluno por módulo carregador/elevador Li-Po;
+- documentação de limites: sem diagnóstico, sem validação clínica e sem certificação fisiológica.
 
 ---
 
@@ -11,14 +35,24 @@ Guia prático para reproduzir uma bancada **Professor-Aluno** com comunicação 
 Ao final da reprodução, o nó **Professor** deve:
 
 - alternar chamadas para os nós Aluno por LoRa;
-- receber pacotes `DATA` com FC, SpO2, bateria, IR, RED, DEDO e QUAL;
+- enviar `BEACON` com `CICLO` e `ALVO`;
+- receber pacotes `DATA` do Aluno chamado;
+- validar identificador, sequência e ciclo;
 - responder com `ACK`;
-- receber pacote opcional `PPG` com uma janela da onda PPG;
-- disponibilizar um painel local em navegador/TV.
+- receber, quando habilitado, o pacote opcional `PPG` com uma janela normalizada da onda PPG;
+- manter o último estado dos Alunos em memória;
+- disponibilizar painel local em navegador/TV;
+- expor endpoint JSON para consulta do estado recente;
+- permitir configuração Wi-Fi local sem recompilar o firmware.
 
-![Painel final da API local do Professor](figuras_readme/api_painel_final.png)
+O nó **Aluno** deve:
 
-![Painel em TV](figuras_readme/api_painel_tv.png)
+- aguardar `BEACON`;
+- responder apenas quando `ALVO` corresponder ao seu `ID_ALUNO_CONFIG`;
+- coletar dados PPG experimentais;
+- montar `DATA` com os campos disponíveis;
+- aguardar e validar o `ACK`;
+- enviar `PPG` opcional após ACK válido, quando houver sinal óptico adequado.
 
 ---
 
@@ -29,25 +63,50 @@ Ao final da reprodução, o nó **Professor** deve:
 | 1 | Heltec WiFi LoRa 32 V2 | Nó Professor |
 | 1 ou 2 | Heltec WiFi LoRa 32 V2 | Nós Aluno |
 | 1 ou 2 | MAX30102/MH-ET LIVE | Sensor PPG dos Alunos |
+| 1 ou 2 | MPU6050/GY-521 | Movimento/postura/artefato operacional, quando habilitado |
 | 2 ou 3 | Antenas LoRa 915 MHz | Comunicação LoRa |
-| 2 ou 3 | Cabos USB | Gravação, alimentação e serial |
-| 1 | Notebook com VS Code + PlatformIO | Compilação e monitor serial |
-| opcional | TV/navegador | Visualização do painel |
+| 2 ou 3 | Cabos USB | Gravação, alimentação e monitor serial |
+| 1 | Notebook com VS Code + PlatformIO | Compilação, gravação e monitoramento |
+| opcional | Módulo carregador/elevador Li-Po | Alimentação estabilizada do nó Aluno |
+| opcional | Bateria Li-Po 3,7 V | Alimentação do protótipo vestível |
+| opcional | TV ou navegador | Visualização do painel local |
 
 ---
 
-## Ligações do MAX30102 no Aluno
+## Ligações do nó Aluno
 
-| MAX30102/MH-ET LIVE | Heltec WiFi LoRa 32 V2 |
+Nos ensaios integrados, OLED, MAX30102 e MPU6050 compartilham o barramento I2C da Heltec.
+
+| Sinal/dispositivo | Heltec WiFi LoRa 32 V2 |
 |---|---|
-| VCC/VIN | 3V3 ou 5V, conforme o módulo |
-| GND | GND |
 | SDA | GPIO 4 |
 | SCL | GPIO 15 |
+| GND dos sensores | GND comum |
+| VCC MAX30102/MH-ET LIVE | 3V3 da Heltec, conforme módulo usado |
+| VCC MPU6050/GY-521 | 3V3 da Heltec, conforme módulo usado |
+| OLED integrado | 0x3C |
+| MAX30102/MH-ET LIVE | 0x57 |
+| MPU6050/GY-521 | 0x68 |
 
-> Confira o seu módulo antes de usar 5 V. Alguns módulos possuem regulador e conversão de nível, outros devem operar em 3,3 V.
+> Confira o seu módulo antes de usar 5 V. Alguns módulos possuem regulador e conversão de nível; outros devem operar em 3,3 V. Na versão consolidada da dissertação, os sensores foram tratados como alimentados pelo 3V3 da Heltec, com GND comum.
 
-![Bancada com Heltec e MAX30102](figuras_readme/bancada_sensor_ppg.jpg)
+### Observação sobre I2C
+
+Nos ensaios de bancada, o barramento I2C foi mantido curto e utilizou a infraestrutura elétrica da placa Heltec e dos módulos de desenvolvimento. Não foram adicionados resistores externos dedicados nessa etapa. Em uma versão final encapsulada, recomenda-se revisar valores de pull-up, comprimento do barramento, capacitância total e roteamento físico.
+
+---
+
+## Alimentação estabilizada
+
+Na etapa final do protótipo, foi documentado o uso de um módulo carregador/elevador Li-Po:
+
+```text
+Bateria Li-Po 3,7 V -> carregador/elevador -> 5 V/VIN da Heltec
+Heltec 3V3 -> MAX30102 e MPU6050
+GND comum entre módulo de energia, Heltec e sensores
+```
+
+O terminal `External Key Pad` do módulo de alimentação é apenas entrada opcional para botão do próprio módulo. Ele não substitui o botão `BOOT/PRG` da Heltec usado no acionamento da calibração assistida.
 
 ---
 
@@ -83,9 +142,9 @@ Abra a pasta no VS Code.
 
 ## Configurar o `platformio.ini`
 
-O arquivo `platformio.ini` define **qual código será gravado em cada placa** e **qual porta serial será usada** no seu computador.
+O arquivo `platformio.ini` define qual código será gravado em cada placa e qual porta serial será usada.
 
-Neste projeto existem três ambientes principais:
+Ambientes principais:
 
 | Ambiente | Função | ID gravado no firmware |
 |---|---|---|
@@ -93,9 +152,7 @@ Neste projeto existem três ambientes principais:
 | `aluno1` | Primeiro nó Aluno | `ID_ALUNO_CONFIG="1"` |
 | `aluno2` | Segundo nó Aluno | `ID_ALUNO_CONFIG="2"` |
 
-### Exemplo completo do `platformio.ini`
-
-Use este modelo como referência. As portas `COM5`, `COM9` e `COM12` são apenas exemplos do computador usado nos testes. No seu computador, substitua cada uma pela porta correta da placa conectada.
+Exemplo de configuração:
 
 ```ini
 [env]
@@ -143,47 +200,23 @@ build_flags =
     -DID_ALUNO_CONFIG=\"2\"
 ```
 
-### Onde trocar a porta
-
-Troque somente estas linhas de cada ambiente:
-
-```ini
-upload_port = COMX
-monitor_port = COMX
-```
-
-Exemplo: se o Windows mostrar que a placa do Professor está na porta `COM7`, então o ambiente do Professor deve ficar assim:
-
-```ini
-[env:professor]
-upload_port = COM7
-monitor_port = COM7
-```
-
-Se o Aluno 1 estiver na `COM11`, então:
-
-```ini
-[env:aluno1]
-upload_port = COM11
-monitor_port = COM11
-```
-
-No Windows, veja as portas em:
+As portas `COM5`, `COM9` e `COM12` são apenas exemplos. No Windows, veja as portas em:
 
 ```text
 Gerenciador de Dispositivos > Portas (COM e LPT)
 ```
 
-No Linux/macOS, a porta normalmente aparece como `/dev/ttyUSB0`, `/dev/ttyACM0`, `/dev/cu.usbserial-*` ou similar. Nesse caso, substitua `COMX` pelo caminho detectado.
+No Linux/macOS, use caminhos como:
 
-Exemplo Linux:
-
-```ini
-upload_port = /dev/ttyUSB0
-monitor_port = /dev/ttyUSB0
+```text
+/dev/ttyUSB0
+/dev/ttyACM0
+/dev/cu.usbserial-*
 ```
 
-### Como criar mais nós Aluno
+---
+
+## Como criar mais nós Aluno
 
 Os nós Aluno usam o mesmo código-fonte. O que muda é apenas o número gravado em `ID_ALUNO_CONFIG`.
 
@@ -202,9 +235,7 @@ build_flags =
     -DID_ALUNO_CONFIG=\"3\"
 ```
 
-Para criar `aluno4`, use `ID_ALUNO_CONFIG=\"4\"`; para `aluno5`, use `ID_ALUNO_CONFIG=\"5\"`, e assim por diante.
-
-> Observação importante: o número de Alunos suportado na prática depende da configuração do firmware do Professor, do tempo de ciclo, da janela de espera, da taxa LoRa e da quantidade de pacotes `PPG` enviados. A dissertação validou a operação com dois Alunos físicos. Para ampliar para mais Alunos, além de criar novos ambientes no `platformio.ini`, ajuste no firmware do Professor a lista ou quantidade de Alunos que serão chamados pelo campo `ALVO`.
+> A dissertação validou a operação com dois Alunos físicos. Para ampliar para mais Alunos, ajuste também no firmware do Professor a lista ou a quantidade de Alunos chamados pelo campo `ALVO`, além de revisar tempo de ciclo, janela de espera, taxa LoRa e envio do pacote `PPG`.
 
 ---
 
@@ -212,95 +243,47 @@ Para criar `aluno4`, use `ID_ALUNO_CONFIG=\"4\"`; para `aluno5`, use `ID_ALUNO_C
 
 Com o `platformio.ini` ajustado, grave uma placa por vez.
 
-### Professor
-
 ```bash
 pio run -e professor -t upload
 pio device monitor -e professor
 ```
-
-### Aluno 1
 
 ```bash
 pio run -e aluno1 -t upload
 pio device monitor -e aluno1
 ```
 
-### Aluno 2
-
 ```bash
 pio run -e aluno2 -t upload
 pio device monitor -e aluno2
 ```
 
-### Aluno 3 ou superior
-
-Se você criou um ambiente novo, use o nome criado:
-
-```bash
-pio run -e aluno3 -t upload
-pio device monitor -e aluno3
-```
-
-O identificador do Aluno não é escolhido pelo monitor serial. Ele é definido no momento da compilação pela linha:
-
-```ini
--DID_ALUNO_CONFIG=\"1\"
-```
-
-Portanto, se dois nós forem gravados com o mesmo `ID_ALUNO_CONFIG`, os dois tentarão responder ao mesmo `ALVO`, causando conflito no teste multialuno.
+Se dois nós forem gravados com o mesmo `ID_ALUNO_CONFIG`, ambos tentarão responder ao mesmo `ALVO`, causando conflito no teste multialuno.
 
 ---
 
 ## Configurar o Wi-Fi do Professor
 
-O Professor tenta conectar na rede Wi-Fi salva. Se não houver rede configurada, ele cria uma rede fallback.
+O Professor tenta conectar à rede Wi-Fi salva. Se não houver rede configurada ou se a conexão falhar, ele cria uma rede fallback.
 
 ### Modo fallback
 
-1. Ligue o Professor.
-2. Procure a rede:
-
 ```text
-ICNP_PROFESSOR_SETUP
+SSID: ICNP_PROFESSOR_SETUP
+Senha: icnp12345
+IP: 192.168.4.1
+Página: http://192.168.4.1/admin
 ```
-
-3. Senha:
-
-```text
-icnp12345
-```
-
-4. Acesse no navegador:
-
-```text
-http://192.168.4.1/admin
-```
-
-5. Selecione ou digite o SSID da rede local.
-6. Informe a senha.
-7. Salve.
-8. O Professor reinicia e tenta entrar em modo station.
-
-![Fallback Wi-Fi](figuras_readme/api_fallback_wifi.png)
 
 ### Modo station
 
 Depois de conectado, o IP aparece no monitor serial do Professor.
 
-Acesse:
-
 ```text
-http://<IP_DO_PROFESSOR>/
+Painel: http://<IP_DO_PROFESSOR>/
+Admin:  http://<IP_DO_PROFESSOR>/admin
+JSON:   http://<IP_DO_PROFESSOR>/api/status
 ```
-
-Admin:
-
-```text
-http://<IP_DO_PROFESSOR>/admin
-```
-
-![Admin Wi-Fi](figuras_readme/api_admin_wifi.png)
 
 ---
 
@@ -317,9 +300,78 @@ http://<IP_DO_PROFESSOR>/admin
 
 ---
 
-## O que deve aparecer no serial do Professor
+## Protocolo ICNP usado
 
-Fluxo esperado:
+Fluxo principal:
+
+```text
+BEACON -> DATA -> ACK
+```
+
+Fluxo com janela PPG opcional:
+
+```text
+BEACON -> DATA -> ACK -> PPG opcional
+```
+
+### BEACON
+
+```text
+ICNP;TIPO=BEACON;PROFESSOR=1;CICLO=<n>;ALVO=<id>
+```
+
+### DATA, formato mínimo
+
+```text
+ICNP;TIPO=DATA;ALUNO=<id>;SEQ=<seq>;CICLO=<n>;FC=<bpm>;SPO2=<%>;BAT=<V>;IR=<valor>;RED=<valor>;DEDO=<0|1>;QUAL=<OK|RUIM|NA>
+```
+
+### DATA, formato estendido consolidado
+
+```text
+ICNP;TIPO=DATA;ALUNO=<id>;SEQ=<seq>;CICLO=<n>;FC=<bpm>;SPO2=<%>;BAT=<V>;IR=<valor>;RED=<valor>;DEDO=<0|1>;QUAL=<OK|RUIM|NA>;AUX_SYS=<aux>;AUX_DIA=<aux>;AUX_VALIDO=<0|1>;USO=<estado>;SINAL_PPG=<estado>;MOV=<classe>;ARTEFATO=<classe>
+```
+
+### ACK
+
+```text
+ICNP;TIPO=ACK;PROFESSOR=1;ALUNO=<id>;SEQ=<seq>;CICLO=<n>
+```
+
+### PPG opcional
+
+```text
+ICNP;TIPO=PPG;ALUNO=<id>;SEQ=<seq>;CICLO=<n>;N=32;PPG=<janela_normalizada>
+```
+
+---
+
+## Campos principais do DATA
+
+| Campo | Significado |
+|---|---|
+| `ALUNO` | Identificador do nó Aluno |
+| `SEQ` | Sequência local do Aluno |
+| `CICLO` | Ciclo aberto pelo Professor |
+| `FC` | Frequência cardíaca experimental |
+| `SPO2` | Estimativa experimental de SpO2 |
+| `BAT` | Tensão operacional do Aluno |
+| `IR` | Canal infravermelho bruto do MAX30102 |
+| `RED` | Canal vermelho bruto do MAX30102 |
+| `DEDO` | Indicador de contato óptico |
+| `QUAL` | Qualidade operacional da amostra |
+| `AUX_SYS` / `AUX_DIA` | Campos auxiliares sintéticos de teste, sem unidade fisiológica |
+| `AUX_VALIDO` | Validade operacional do bloco auxiliar sintético |
+| `USO` | Estado de uso do sensor |
+| `SINAL_PPG` | Estado operacional do sinal PPG |
+| `MOV` | Estado derivado de movimento/postura |
+| `ARTEFATO` | Estado operacional de artefato |
+
+`AUX_SYS`, `AUX_DIA` e `AUX_VALIDO` não representam pressão arterial, não possuem significado clínico e são mantidos apenas para exercitar a extensibilidade do pacote e da API.
+
+---
+
+## Exemplo de serial do Professor
 
 ```text
 Enviando BEACON: ICNP;TIPO=BEACON;PROFESSOR=1;CICLO=15;ALVO=1
@@ -328,28 +380,11 @@ Enviando ACK: ICNP;TIPO=ACK;PROFESSOR=1;ALUNO=1;SEQ=35;CICLO=15
 Recebido apos ACK: ICNP;TIPO=PPG;ALUNO=1;SEQ=35;CICLO=15;N=32;PPG=...
 ```
 
-O pacote `DATA` carrega os valores resumidos. O pacote `PPG` carrega uma janela curta para desenhar a onda PPG do pulso na API.
+Se o firmware estiver na versão estendida com PPG-MPU, o pacote pode incluir também `USO`, `SINAL_PPG`, `MOV`, `ARTEFATO` e campos auxiliares sintéticos.
 
 ---
 
-## O que deve aparecer no serial do Aluno
-
-```text
-BEACON RECEBIDO PARA ESTE ALUNO
-FC enviada: 75
-SpO2 enviado: 95
-Dedo: SIM
-Qualidade: OK
-Enviando DATA: ICNP;TIPO=DATA;...
-ACK valido. Ciclo ICNP concluido.
-Enviando PPG debug: ICNP;TIPO=PPG;...
-```
-
-Sem dedo no sensor, o esperado é `DEDO=0`, `QUAL=NA` e ausência da onda PPG no painel.
-
----
-
-## Verificar a API
+## API local
 
 Endpoint JSON:
 
@@ -371,31 +406,26 @@ Campos principais por Aluno:
 | `rssi` / `snr` | Métricas LoRa |
 | `ppg` | Janela normalizada da onda PPG |
 
+A API é camada de visualização operacional. Ela não executa diagnóstico e não valida clinicamente FC ou SpO2.
+
 ---
 
-## Protocolo ICNP usado
+## Calibração assistida PPG-MPU
 
-```text
-BEACON -> DATA -> ACK -> PPG opcional
-```
+Nas versões finais documentadas na dissertação, a calibração assistida PPG-MPU foi usada para orientar o usuário em etapas como:
 
-Formatos:
+1. entrada pelo botão `BOOT/PRG`;
+2. validação de contato óptico;
+3. zeragem da base inercial;
+4. parado;
+5. andando;
+6. movimento de mão/braço;
+7. corrida local;
+8. pulo;
+9. sentado/apoiado;
+10. salvamento do perfil.
 
-```text
-ICNP;TIPO=BEACON;PROFESSOR=1;CICLO=<n>;ALVO=<id>
-```
-
-```text
-ICNP;TIPO=DATA;ALUNO=<id>;SEQ=<seq>;CICLO=<n>;FC=<bpm>;SPO2=<%>;BAT=<V>;IR=<valor>;RED=<valor>;DEDO=<0|1>;QUAL=<OK|RUIM|NA>
-```
-
-```text
-ICNP;TIPO=ACK;PROFESSOR=1;ALUNO=<id>;SEQ=<seq>;CICLO=<n>
-```
-
-```text
-ICNP;TIPO=PPG;ALUNO=<id>;SEQ=<seq>;CICLO=<n>;N=32;PPG=<janela_normalizada>
-```
+A camada MPU6050/GY-521 não transmite séries brutas de aceleração ou giroscópio no pacote ICNP consolidado. Ela contribui com estados derivados, como `MOV` e `ARTEFATO`. Telemetria inercial bruta ou descritores compactados adicionais ficam como evolução futura.
 
 ---
 
@@ -427,8 +457,6 @@ README.md
 
 ## Teste rápido de funcionamento
 
-Use esta lista para saber se a bancada está correta:
-
 - [ ] Professor imprime ciclos ICNP no serial.
 - [ ] Aluno recebe `BEACON`.
 - [ ] Aluno responde apenas quando `ALVO` é o seu ID.
@@ -438,7 +466,7 @@ Use esta lista para saber se a bancada está correta:
 - [ ] Com dedo no sensor, aparece `DEDO=1` e `QUAL=OK`.
 - [ ] API abre no navegador.
 - [ ] API mostra FC, SpO2, bateria, RSSI/SNR.
-- [ ] API mostra a onda PPG do pulso.
+- [ ] API mostra a onda PPG do pulso quando `PPG` está habilitado.
 - [ ] Sem dedo, a onda PPG para e aparece ausência de contato óptico.
 
 ---
@@ -447,13 +475,11 @@ Use esta lista para saber se a bancada está correta:
 
 ### Sensor MAX30102 não encontrado
 
-Verifique:
+Verifique VCC/GND, SDA no GPIO 4, SCL no GPIO 15, endereço I2C `0x57` e alimentação compatível com o módulo.
 
-- VCC/GND;
-- SDA no GPIO 4;
-- SCL no GPIO 15;
-- endereço I2C `0x57`;
-- alimentação compatível com o módulo.
+### MPU6050 não encontrado
+
+Verifique VCC/GND, SDA no GPIO 4, SCL no GPIO 15, endereço I2C `0x68`, barramento compartilhado com OLED/MAX30102 e estabilidade da alimentação.
 
 ### Professor não conecta no Wi-Fi
 
@@ -473,42 +499,11 @@ http://192.168.4.1/admin
 
 ### API abre, mas não aparecem dados
 
-Verifique se o Professor está recebendo `DATA` no monitor serial.
-
-Se o LoRa não estiver recebendo, a API abre mas não tem dados novos.
+Verifique se o Professor está recebendo `DATA` no monitor serial. Se o LoRa não estiver recebendo, a API abre, mas não terá dados novos.
 
 ### Onda PPG não aparece
 
-Verifique:
-
-- dedo bem posicionado no sensor;
-- `DEDO=1`;
-- `QUAL=OK`;
-- pacote `PPG` recebido após o `ACK` no serial do Professor.
-
-### Aluno 2 não responde
-
-Confira se o ambiente correto foi gravado:
-
-```ini
--DID_ALUNO_CONFIG="2"
-```
-
----
-
-## Evidências visuais complementares
-
-### Autômatos ICNP
-
-![Autômato Professor](figuras_readme/automato_professor.png)
-
-![Autômato Aluno](figuras_readme/automato_aluno.png)
-
-### Comparação preliminar com oxímetro
-
-A comparação é apenas técnico-operacional e preliminar, em repouso sentado. Não representa validação clínica.
-
-![Comparação com oxímetro](figuras_readme/comparacao_oximetro.png)
+Verifique dedo bem posicionado, `DEDO=1`, `QUAL=OK` e pacote `PPG` recebido após o `ACK` no serial do Professor.
 
 ---
 
@@ -518,14 +513,25 @@ Este repositório demonstra uma arquitetura experimental. Ainda não cobre:
 
 - validação fisiológica formal;
 - certificação de desempenho;
+- diagnóstico ou decisão clínica;
 - teste com muitos participantes;
 - teste esportivo em movimento real;
 - autonomia medida com instrumento dedicado;
-- fixação mecânica definitiva em luva ou pulseira.
+- fixação mecânica definitiva em luva ou pulseira;
+- protocolo otimizado em codificação binária;
+- criptografia, correção de erros e retransmissão automática;
+- reconhecimento formal de atividade humana.
+
+---
+
+## Relação com a dissertação
+
+A dissertação final documenta a evolução do sistema até a versão consolidada com formalização do ICNP, ensaios de comunicação, operação multialuno, integração PPG, API local, pacote `PPG` opcional, exportação de dados, ensaio exploratório com luva, MPU6050 como camada operacional de movimento/postura, calibração assistida, alimentação estabilizada e delimitação explícita de que os dados fisiológicos são experimentais.
+
+O código e o README servem como apoio de reprodução técnica da bancada. A interpretação acadêmica completa, as métricas e as ameaças à validade estão descritas na dissertação.
 
 ---
 
 ## Licença
 
 Projeto acadêmico desenvolvido para fins de pesquisa e reprodução experimental.
-
