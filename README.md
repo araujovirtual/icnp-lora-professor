@@ -110,6 +110,26 @@ O terminal `External Key Pad` do módulo de alimentação é apenas entrada opci
 
 ---
 
+## Esquemático de hardware consolidado
+
+A figura abaixo resume a arquitetura de aquisição e transmissão do nó Aluno, incluindo Heltec, MAX30102, MPU6050, OLED compartilhando o barramento I2C e a alimentação estabilizada por módulo carregador/elevador Li-Po.
+
+![Esquemático de hardware consolidado](figuras_readme/esquematico_hardware.png)
+
+---
+
+## Último painel válido da API local
+
+O painel abaixo representa a visualização consolidada da API local do Professor, com tendências de FC e SpO2, onda PPG, marcadores temporais e telemetria recente dos nós Aluno.
+
+![Último painel válido da API local](figuras_readme/api_painel_final.png)
+
+Visualização complementar do painel em TV/navegador:
+
+![Painel local em TV](figuras_readme/api_painel_tv.png)
+
+---
+
 ## Software necessário
 
 Instale:
@@ -381,6 +401,63 @@ Recebido apos ACK: ICNP;TIPO=PPG;ALUNO=1;SEQ=35;CICLO=15;N=32;PPG=...
 ```
 
 Se o firmware estiver na versão estendida com PPG-MPU, o pacote pode incluir também `USO`, `SINAL_PPG`, `MOV`, `ARTEFATO` e campos auxiliares sintéticos.
+
+### Log operacional mais completo do Professor
+
+```text
+===== CICLO ICNP =====
+Ciclo: 97
+Alvo: ALUNO 1
+Energia Professor: 3.71 V
+Enviando BEACON: ICNP;TIPO=BEACON;PROFESSOR=1;CICLO=97;ALVO=1
+Recebido: ICNP;TIPO=DATA;ALUNO=1;SEQ=97;CICLO=97;FC=94;SPO2=97;BAT=3.98;IR=98231;RED=25410;DEDO=1;QUAL=OK;AUX_SYS=121;AUX_DIA=78;AUX_VALIDO=1;USO=USANDO;SINAL_PPG=PPG_ATIVO;MOV=PARADO_2_RECUPERACAO;ARTEFATO=SEM_ARTEFATO
+Enviando ACK: ICNP;TIPO=ACK;PROFESSOR=1;ALUNO=1;SEQ=97;CICLO=97
+Recebido apos ACK: ICNP;TIPO=PPG;ALUNO=1;SEQ=97;CICLO=97;N=32;PPG=518,522,529,541,560,581,603,620,628,624,608,586,560,536,522,516,519,531,549,571,595,614,625,622,607,585,561,540,524,516,517,518
+RSSI recebido: -65 dBm | SNR: 8.25 dB
+```
+
+### Log operacional de referência do Aluno
+
+```text
+BEACON RECEBIDO PARA ESTE ALUNO
+Ciclo recebido: 97
+FC enviada: 94
+SpO2 enviada: 97
+Dedo: SIM
+Qualidade: OK
+USO: USANDO
+SINAL_PPG: PPG_ATIVO
+MOV: PARADO_2_RECUPERACAO
+ARTEFATO: SEM_ARTEFATO
+Enviando DATA: ICNP;TIPO=DATA;ALUNO=1;SEQ=97;CICLO=97;FC=94;SPO2=97;BAT=3.98;IR=98231;RED=25410;DEDO=1;QUAL=OK;AUX_SYS=121;AUX_DIA=78;AUX_VALIDO=1;USO=USANDO;SINAL_PPG=PPG_ATIVO;MOV=PARADO_2_RECUPERACAO;ARTEFATO=SEM_ARTEFATO
+ACK valido. Ciclo ICNP concluido.
+Enviando PPG debug: ICNP;TIPO=PPG;ALUNO=1;SEQ=97;CICLO=97;N=32;PPG=518,522,529,541,560,581,603,620,628,624,608,586,560,536,522,516,519,531,549,571,595,614,625,622,607,585,561,540,524,516,517,518
+```
+
+### Exemplo resumido de resposta JSON da API
+
+```json
+{
+  "aluno1": {
+    "id": "1",
+    "fc": 94,
+    "spo2": 97,
+    "bat_aluno": 3.98,
+    "ir": 98231,
+    "red": 25410,
+    "dedo": 1,
+    "qual": "OK",
+    "uso": "USANDO",
+    "sinal_ppg": "PPG_ATIVO",
+    "mov": "PARADO_2_RECUPERACAO",
+    "artefato": "SEM_ARTEFATO",
+    "rssi": -65,
+    "snr": 8.25,
+    "ppg_n": 32,
+    "ppg": [518, 522, 529, 541, 560, 581, 603, 620]
+  }
+}
+```
 
 ---
 
