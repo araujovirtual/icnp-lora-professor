@@ -285,9 +285,11 @@ Se dois nós forem gravados com o mesmo `ID_ALUNO_CONFIG`, ambos tentarão respo
 
 ## Configurar o Wi-Fi do Professor
 
-O Professor tenta conectar à rede Wi-Fi salva. Se não houver rede configurada ou se a conexão falhar, ele cria uma rede fallback.
+O Professor tenta conectar à rede Wi-Fi salva. Se não houver rede configurada ou se a conexão falhar, ele cria uma rede fallback para configuração local.
 
 ### Modo fallback
+
+No primeiro uso, ou quando a conexão com a rede salva falhar, procure no Windows/celular a rede criada pelo Professor:
 
 ```text
 SSID: ICNP_PROFESSOR_SETUP
@@ -296,15 +298,31 @@ IP: 192.168.4.1
 Página: http://192.168.4.1/admin
 ```
 
+![Rede fallback do Professor disponível no Windows](figuras_readme/wifi_fallback_rede_windows.png)
+
+Depois de conectar o notebook ou celular nessa rede, abra o navegador em:
+
+```text
+http://192.168.4.1/admin
+```
+
+A tela administrativa permite selecionar a rede Wi-Fi local, informar a senha e salvar a configuração.
+
+![Tela administrativa em modo fallback](figuras_readme/wifi_admin_fallback.png)
+
 ### Modo station
 
-Depois de conectado, o IP aparece no monitor serial do Professor.
+Depois de salvar a rede local, o Professor reinicia e tenta conectar em modo station. Quando a conexão é concluída, o IP aparece no monitor serial e o painel pode ser acessado por qualquer dispositivo na mesma rede.
 
 ```text
 Painel: http://<IP_DO_PROFESSOR>/
 Admin:  http://<IP_DO_PROFESSOR>/admin
 JSON:   http://<IP_DO_PROFESSOR>/api/status
 ```
+
+A tela administrativa em modo station também permite verificar redes detectadas e refazer a configuração quando necessário.
+
+![Wi-Fi configurado em modo station com varredura assíncrona](figuras_readme/wifi_station_configurado_scan.png)
 
 ---
 
